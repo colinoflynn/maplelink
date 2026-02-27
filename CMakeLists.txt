@@ -6,6 +6,8 @@ include(pico_sdk_import.cmake)
 project(picowebserverspi)
 
 set(picotool_DIR "C:/devtools/picotool")
+set(BROWSERIO_XTERM_SOURCE "CDN" CACHE STRING "xterm.js source: CDN or LOCAL")
+set_property(CACHE BROWSERIO_XTERM_SOURCE PROPERTY STRINGS CDN LOCAL)
 
 pico_sdk_init()
 
@@ -50,7 +52,22 @@ target_sources(picowebserverspi PUBLIC
   ${CMAKE_CURRENT_LIST_DIR}/src/proto_spi.c
   ${CMAKE_CURRENT_LIST_DIR}/src/proto_i2c.c
   ${CMAKE_CURRENT_LIST_DIR}/src/http_custom_files.c
+  ${CMAKE_CURRENT_LIST_DIR}/src/xterm_assets.c
   )
+
+if(BROWSERIO_XTERM_SOURCE STREQUAL "LOCAL")
+  target_compile_definitions(picowebserverspi PUBLIC
+    BROWSERIO_XTERM_SOURCE_LOCAL=1
+    BROWSERIO_XTERM_JS_URL_PRIMARY=\"/xterm.js\"
+    BROWSERIO_XTERM_JS_URL_FALLBACK=\"/xterm.js\"
+    BROWSERIO_XTERM_CSS_URL=\"/xterm.css\")
+else()
+  target_compile_definitions(picowebserverspi PUBLIC
+    BROWSERIO_XTERM_SOURCE_LOCAL=0
+    BROWSERIO_XTERM_JS_URL_PRIMARY=\"https://unpkg.com/xterm@5.3.0/lib/xterm.js\"
+    BROWSERIO_XTERM_JS_URL_FALLBACK=\"https://unpkg.com/xterm/lib/xterm.js\"
+    BROWSERIO_XTERM_CSS_URL=\"https://unpkg.com/xterm@5.3.0/css/xterm.css\")
+endif()
 
 # Example include
 target_include_directories(picowebserverspi PUBLIC

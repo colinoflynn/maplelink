@@ -1,6 +1,19 @@
 #include <string.h>
 
 #include "lwip/apps/fs.h"
+#include "xterm_assets.h"
+
+#ifndef BROWSERIO_XTERM_JS_URL_PRIMARY
+#define BROWSERIO_XTERM_JS_URL_PRIMARY "https://unpkg.com/xterm@5.3.0/lib/xterm.js"
+#endif
+
+#ifndef BROWSERIO_XTERM_JS_URL_FALLBACK
+#define BROWSERIO_XTERM_JS_URL_FALLBACK "https://unpkg.com/xterm/lib/xterm.js"
+#endif
+
+#ifndef BROWSERIO_XTERM_CSS_URL
+#define BROWSERIO_XTERM_CSS_URL "https://unpkg.com/xterm@5.3.0/css/xterm.css"
+#endif
 
 static const char INDEX_HTML[] =
   "<!doctype html><html><head><meta charset='utf-8'><title>Pico BrowserIO</title>"
@@ -45,6 +58,7 @@ static const char INDEX_HTML[] =
   "<label><input id='hexview' type='checkbox'>hex view</label>"
   "<label>Hex cols <input id='hexcols' type='number' value='16' min='4' max='64' step='1'></label>"
   "<label>Hex gap ms <input id='hexgap' type='number' value='100' min='10' max='2000' step='10'></label>"
+  "<label>Backlog KB <input id='retainkb' type='number' value='256' min='32' max='2048' step='32'></label>"
   "<label><input id='localecho' type='checkbox'>local echo</label>"
   "<button id='apply'>Apply</button>"
   "<span id='dirty'>settings changed - press Apply</span>"
@@ -71,6 +85,7 @@ static const char INDEX_HTML[] =
   "const hexView=document.getElementById('hexview');"
   "const hexCols=document.getElementById('hexcols');"
   "const hexGap=document.getElementById('hexgap');"
+  "const retainKb=document.getElementById('retainkb');"
   "const localEcho=document.getElementById('localecho');"
   "const tx=document.getElementById('tx');"
   "const cursor=document.createElement('span');cursor.className='cursor';"
@@ -80,16 +95,23 @@ static const char INDEX_HTML[] =
   "const dec=new TextDecoder('utf-8',{fatal:false});"
   "let lineBuf='';"
   "let hexOffset=0;"
-  "let pendingHex=[];"
+  "let pendingHexChunks=[];"
+  "let pendingHexBytes=0;"
   "let hexTimer=null;"
+  "let rxChunks=[];"
+  "let rxFlushTimer=null;"
+  "let termCharCount=0;"
   "let xterm=null;"
   "let xtermLoading=false;"
   "let xtermFailed=false;"
   "const sgr={bold:false,fg:'',bg:''};"
   "function markDirty(v){if(v){applyBtn.classList.add('pending');dirty.classList.add('show');}else{applyBtn.classList.remove('pending');dirty.classList.remove('show');}}"
   "function keepCursor(){if(cursor.parentNode)cursor.parentNode.removeChild(cursor);term.appendChild(cursor);}"
+  "function termLimit(){const kb=Math.max(32,Math.min(2048,parseInt(retainKb.value,10)||256));return kb*1024;}"
+  "function hexLimit(){return Math.floor(termLimit()*1.5);}"
+  "function trimTerm(){const lim=termLimit();while(termCharCount>lim){const n=term.firstChild;if(!n||n===cursor)break;const l=(n.textContent||'').length;termCharCount-=l;term.removeChild(n);}if(termCharCount<0)termCharCount=0;}"
   "function atBottom(el){return el.scrollHeight-el.scrollTop-el.clientHeight<8;}"
-  "function appendTerm(text,cls){const stick=atBottom(term);const span=document.createElement('span');if(cls)span.className=cls;span.textContent=text;term.appendChild(span);keepCursor();if(stick)term.scrollTop=term.scrollHeight;}"
+  "function appendTerm(text,cls){const stick=atBottom(term);const span=document.createElement('span');if(cls)span.className=cls;span.textContent=text;term.appendChild(span);termCharCount+=text.length;trimTerm();keepCursor();if(stick)term.scrollTop=term.scrollHeight;}"
   "function appendTermStyled(text){const cls=[sgr.bold?'ansi-bold':'',sgr.fg,sgr.bg].filter(Boolean).join(' ');appendTerm(text,cls);}"
   "function parseSgr(code){if(!code||code==='0'){sgr.bold=false;sgr.fg='';sgr.bg='';return;}code.split(';').forEach(c=>{const n=parseInt(c||'0',10);if(n===0){sgr.bold=false;sgr.fg='';sgr.bg='';}"
   "else if(n===1)sgr.bold=true;else if(n===22)sgr.bold=false;else if(n===39)sgr.fg='';else if(n===49)sgr.bg='';"
@@ -100,10 +122,13 @@ static const char INDEX_HTML[] =
   "const hx=Array.from(chunk,b=>b.toString(16).padStart(2,'0')).join(' ');"
   "const asc=Array.from(chunk,b=>(b>=32&&b<=126)?String.fromCharCode(b):'.').join('');"
   "out+=off+'  '+hx.padEnd(cols*3-1,' ')+'  '+asc+'\\n';}"
-  "hexOffset+=bytes.length;hex.textContent+=out;if(stick)hex.scrollTop=hex.scrollHeight;}"
-  "function flushHex(){if(!pendingHex.length)return;const b=Uint8Array.from(pendingHex);pendingHex=[];appendHexNow(b);}"
-  "function queueHex(bytes){if(!hexView.checked)return;for(const v of bytes)pendingHex.push(v);if(hexTimer)clearTimeout(hexTimer);"
+  "hexOffset+=bytes.length;hex.textContent+=out;if(hex.textContent.length>hexLimit())hex.textContent=hex.textContent.slice(-hexLimit());if(stick)hex.scrollTop=hex.scrollHeight;}"
+  "function flushHex(){if(!pendingHexBytes)return;const b=new Uint8Array(pendingHexBytes);let o=0;for(const ch of pendingHexChunks){b.set(ch,o);o+=ch.length;}pendingHexChunks=[];pendingHexBytes=0;appendHexNow(b);}"
+  "function queueHex(bytes){if(!hexView.checked)return;pendingHexChunks.push(bytes);pendingHexBytes+=bytes.length;if(hexTimer)clearTimeout(hexTimer);"
   "const gap=Math.max(10,Math.min(2000,parseInt(hexGap.value,10)||100));hexTimer=setTimeout(()=>{hexTimer=null;flushHex();},gap);}"
+  "function processRxChunks(){if(!rxChunks.length){rxFlushTimer=null;return;}const parts=rxChunks;rxChunks=[];rxFlushTimer=null;let total=0;for(const p of parts)total+=p.length;const b=new Uint8Array(total);let o=0;for(const p of parts){b.set(p,o);o+=p.length;}queueHex(b);"
+  "const txt=dec.decode(b);if(decodeMode.value==='vt100'&&xterm){xterm.write(txt);}else if(decodeMode.value==='ansi')appendAnsi(txt);else appendTerm(txt);}"
+  "function queueRx(bytes){rxChunks.push(bytes);if(rxFlushTimer===null)rxFlushTimer=setTimeout(processRxChunks,16);}"
   "function enterBytes(){if(enterMode.value==='lf')return new Uint8Array([10]);if(enterMode.value==='crlf')return new Uint8Array([13,10]);return new Uint8Array([13]);}"
   "function sendBinary(arr){if(ws.readyState===1)ws.send(arr);}"
   "function sendTextLine(str){if(!str)return;sendBinary(enc.encode(str));}"
@@ -112,8 +137,8 @@ static const char INDEX_HTML[] =
   "function send(o){if(ws.readyState===1)ws.send(JSON.stringify(o));}"
   "function loadScript(src){return new Promise((ok,fail)=>{const s=document.createElement('script');s.src=src;s.onload=ok;s.onerror=fail;document.head.appendChild(s);});}"
   "function loadCss(href){if(document.querySelector('link[data-xterm]'))return;const l=document.createElement('link');l.rel='stylesheet';l.href=href;l.setAttribute('data-xterm','1');document.head.appendChild(l);}"
-  "async function ensureXterm(){if(xterm||xtermLoading||xtermFailed)return;xtermLoading=true;try{loadCss('https://unpkg.com/xterm@5.3.0/css/xterm.css');"
-  "if(!window.Terminal){try{await loadScript('https://unpkg.com/xterm@5.3.0/lib/xterm.js');}catch(_){await loadScript('https://unpkg.com/xterm/lib/xterm.js');}}"
+  "async function ensureXterm(){if(xterm||xtermLoading||xtermFailed)return;xtermLoading=true;try{loadCss('" BROWSERIO_XTERM_CSS_URL "');"
+  "if(!window.Terminal){try{await loadScript('" BROWSERIO_XTERM_JS_URL_PRIMARY "');}catch(_){await loadScript('" BROWSERIO_XTERM_JS_URL_FALLBACK "');}}"
   "xterm=new window.Terminal({cursorBlink:true,convertEol:false,theme:{background:'#0b0f14',foreground:'#e6edf3'}});xterm.open(termVt);xterm.onData(d=>sendBinary(enc.encode(d)));xterm.write('\\r\\n[VT100 mode active]\\r\\n');}"
   "catch(_){xtermFailed=true;appendTerm('\\n[error failed to load xterm.js, check internet access]\\n','err');decodeMode.value='ansi';shell.classList.remove('vt');}finally{xtermLoading=false;}}"
   "function syncDecodeMode(){if(decodeMode.value==='vt100'){shell.classList.add('vt');ensureXterm();}else{shell.classList.remove('vt');}}"
@@ -126,7 +151,7 @@ static const char INDEX_HTML[] =
   "   else if(m.type==='error'){appendTerm('\\n[error '+(m.msg||'unknown')+']\\n','err');}"
   "   else{appendTerm('\\n['+e.data+']\\n');}"
   "  }catch(_){appendTerm(e.data);}"
-  " }else{const b=new Uint8Array(e.data);queueHex(b);const txt=dec.decode(b);if(decodeMode.value==='vt100'&&xterm){xterm.write(txt);}else if(decodeMode.value==='ansi')appendAnsi(txt);else appendTerm(txt);}"
+  " }else{queueRx(new Uint8Array(e.data));}"
   "};"
   "applyBtn.onclick=()=>{"
   " send({type:'uart.set_config',port:'uart0',baud:parseInt(document.getElementById('baud').value,10)||115200,"
@@ -135,11 +160,12 @@ static const char INDEX_HTML[] =
   " markDirty(false);"
   "};"
   "document.getElementById('sendbytes').onclick=()=>{try{const b=parseByteInput(tx.value);if(!b.length)return;sendBinary(b);}catch(err){appendTerm('\\n[error '+err.message+']\\n','err');}};"
-  "document.getElementById('clear').onclick=()=>{term.textContent='';hex.textContent='';hexOffset=0;lineBuf='';pendingHex=[];if(hexTimer){clearTimeout(hexTimer);hexTimer=null;}if(xterm)xterm.clear();sgr.bold=false;sgr.fg='';sgr.bg='';keepCursor();};"
+  "document.getElementById('clear').onclick=()=>{term.textContent='';hex.textContent='';hexOffset=0;lineBuf='';termCharCount=0;pendingHexChunks=[];pendingHexBytes=0;rxChunks=[];"
+  "if(hexTimer){clearTimeout(hexTimer);hexTimer=null;}if(rxFlushTimer){clearTimeout(rxFlushTimer);rxFlushTimer=null;}if(xterm)xterm.clear();sgr.bold=false;sgr.fg='';sgr.bg='';keepCursor();};"
   "['baud','data','parity','stop'].forEach(id=>{const el=document.getElementById(id);el.addEventListener('input',()=>markDirty(true));el.addEventListener('change',()=>markDirty(true));});"
   "hexCols.addEventListener('input',()=>{hexOffset=0;hex.textContent='';});"
   "decodeMode.addEventListener('change',syncDecodeMode);"
-  "hexView.onchange=()=>{if(hexView.checked){shell.classList.add('hex');}else{shell.classList.remove('hex');pendingHex=[];if(hexTimer){clearTimeout(hexTimer);hexTimer=null;}}};"
+  "hexView.onchange=()=>{if(hexView.checked){shell.classList.add('hex');}else{shell.classList.remove('hex');pendingHexChunks=[];pendingHexBytes=0;if(hexTimer){clearTimeout(hexTimer);hexTimer=null;}}};"
   "term.addEventListener('keydown',(e)=>{"
   " if(decodeMode.value==='vt100')return;"
   " if(ws.readyState!==1)return;"
@@ -161,7 +187,32 @@ static const char INDEX_HTML[] =
   "</script></body></html>";
 
 int fs_open_custom(struct fs_file *file, const char *name) {
+  const char *asset_data = NULL;
+  const char *asset_type = NULL;
+  int asset_len = 0;
+
   if (!file || !name) return 0;
+
+#if defined(BROWSERIO_XTERM_SOURCE_LOCAL) && BROWSERIO_XTERM_SOURCE_LOCAL
+  if (xterm_asset_get(name, &asset_data, &asset_len, &asset_type)) {
+    (void)asset_type;
+    file->data = asset_data;
+    file->len = asset_len;
+    file->index = file->len;
+    file->flags = 0;
+#if LWIP_HTTPD_FILE_EXTENSION
+    file->pextension = NULL;
+#endif
+#if HTTPD_PRECALCULATED_CHECKSUM
+    file->chksum = NULL;
+    file->chksum_count = 0;
+#endif
+#if LWIP_HTTPD_FILE_STATE
+    file->state = NULL;
+#endif
+    return 1;
+  }
+#endif
 
   if (strcmp(name, "/") == 0 || strcmp(name, "/index.html") == 0) {
     file->data = INDEX_HTML;
