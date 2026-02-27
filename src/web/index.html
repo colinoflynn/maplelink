@@ -57,6 +57,10 @@
     .wmap th { color:#93c5fd; background:#0b1220; }
     .wpin { color:#a7f3d0; font-weight:bold; }
     .warn { color:#fbbf24; font-size:12px; }
+    .idbox { margin-top:8px; border:1px solid #334155; background:#0b1220; border-radius:6px; padding:8px; font-size:12px; color:#cbd5e1; }
+    .idgrid { display:grid; grid-template-columns:130px 1fr; gap:4px 10px; }
+    .idlbl { color:#93c5fd; }
+    .idval { color:#e6edf3; }
     #spidump { color:#93c5fd; font-size:12px; }
   </style>
 </head>
@@ -178,6 +182,15 @@
         <button id="spiidstart">Start ID Poll</button>
         <button id="spiidstop">Stop ID Poll</button>
       </div>
+      <div class="idbox">
+        <div class="idgrid">
+          <div class="idlbl">Last Raw ID</div><div class="idval" id="idraw">--</div>
+          <div class="idlbl">Manufacturer</div><div class="idval" id="idmfg">--</div>
+          <div class="idlbl">Memory Type</div><div class="idval" id="idtype">--</div>
+          <div class="idlbl">Capacity</div><div class="idval" id="idcap">--</div>
+          <div class="idlbl">Decoded Summary</div><div class="idval" id="idsummary">--</div>
+        </div>
+      </div>
     </div>
     <div class="group">
       <div class="gtitle">Dump</div>
@@ -232,6 +245,11 @@
     const spiDump=document.getElementById('spidump');
     const spiSt=document.getElementById('spist');
     const spiOut=document.getElementById('spiout');
+    const idRaw=document.getElementById('idraw');
+    const idMfg=document.getElementById('idmfg');
+    const idType=document.getElementById('idtype');
+    const idCap=document.getElementById('idcap');
+    const idSummary=document.getElementById('idsummary');
     const mapMosi=document.getElementById('map-mosi');
     const mapMiso=document.getElementById('map-miso');
     const mapCs=document.getElementById('map-cs');
@@ -296,6 +314,24 @@
     function parseNum(s,def){const n=parseInt(String(s||''),10);return Number.isFinite(n)?n:def;}
     function parseHexByte(s,def){let t=String(s||'').trim().toLowerCase();if(t.startsWith('0x'))t=t.slice(2);if(!/^[0-9a-f]{1,2}$/.test(t))return def;return parseInt(t,16);}
     function setMap(el,pin,suffix){if(!el)return;el.textContent='GPIO'+pin+(suffix||'');}
+    function parseIdHex(s){if(!s)return[];const toks=String(s).trim().split(/[\s,]+/).filter(Boolean);const out=[];for(const t0 of toks){let t=t0.toLowerCase();if(t.startsWith('0x'))t=t.slice(2);if(!/^[0-9a-f]{1,2}$/.test(t))continue;out.push(parseInt(t,16));}return out;}
+    function hex2(n){return '0x'+(n&255).toString(16).toUpperCase().padStart(2,'0');}
+    function jedecMfgName(id){
+      const map={0xEF:'Winbond',0xC2:'Macronix',0x20:'Micron/ST',0x1F:'Adesto/Dialog',0x9D:'ISSI',0xBF:'Microchip/SST',0x01:'Spansion/Cypress',0x37:'AMIC',0x8C:'ESMT',0xA1:'Fudan'};
+      return map[id]||'Unknown';
+    }
+    function decodeJedec(bytes){
+      if(bytes.length<3)return null;
+      const m=bytes[0],t=bytes[1],c=bytes[2];
+      let cap='Unknown';
+      if(c>=0x10&&c<=0x30){
+        const bytesN=Math.pow(2,c);
+        const mib=(bytesN/1048576);
+        const mbit=(bytesN*8/1048576);
+        cap=(mib>=1?mib.toFixed(mib>=16?0:2)+' MiB / ':'')+mbit.toFixed(mbit>=128?0:2)+' Mbit ('+bytesN+' bytes)';
+      }
+      return {mfg:jedecMfgName(m)+' ('+hex2(m)+')',type:hex2(t),cap:cap,summary:jedecMfgName(m)+' '+hex2(t)+' '+hex2(c)};
+    }
     function setPinUi(pin,level,available,delta,dtMs){
       const u=pinUi[pin];if(!u)return;
       const base='pstate ';
@@ -339,7 +375,15 @@
         pinPrevTs=now;
         return true;
       }
-      if(m.type==='spi.id.result'){spiSt.textContent='id '+(m.id_hex||'');spiSt.className='ok';spiLog('[spi.id] '+JSON.stringify(m));return true;}
+      if(m.type==='spi.id.result'){
+        const raw=(m.id_hex||'').trim();
+        idRaw.textContent=raw||'--';
+        const b=parseIdHex(raw);
+        const d=decodeJedec(b);
+        if(d){idMfg.textContent=d.mfg;idType.textContent=d.type;idCap.textContent=d.cap;idSummary.textContent=d.summary;}
+        else{idMfg.textContent='--';idType.textContent='--';idCap.textContent='--';idSummary.textContent='unable to decode';}
+        spiSt.textContent='id '+(m.id_hex||'');spiSt.className='ok';spiLog('[spi.id] '+JSON.stringify(m));return true;
+      }
       if(m.type==='spi.sniffer.frame'){spiLog('[sniffer] '+(m.hex||JSON.stringify(m)));return true;}
       if(m.type==='spi.dump.chunk'){
         if(m.mode==='ff_run')spiDump.textContent='dump offset '+(m.offset||0)+' ff-run '+(m.count||0)+' bytes';
