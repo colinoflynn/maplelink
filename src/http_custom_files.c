@@ -16,7 +16,7 @@
 #endif
 
 static const char INDEX_HTML[] =
-  "<!doctype html><html><head><meta charset='utf-8'><title>Pico BrowserIO</title>"
+  "<!doctype html><html><head><meta charset='utf-8'><title>MapleLink Pico USB-Serial Interface</title>"
   "<meta name='viewport' content='width=device-width,initial-scale=1'>"
   "<style>"
   ":root{--bg:#0b0f14;--bg2:#111827;--fg:#e6edf3;--dim:#9ca3af;--line:#334155;--ok:#22c55e;--err:#ef4444;}"
@@ -52,7 +52,7 @@ static const char INDEX_HTML[] =
   "<label>Data <select id='data'><option>8</option><option>7</option></select></label>"
   "<label>Parity <select id='parity'><option value='none'>none</option><option value='even'>even</option><option value='odd'>odd</option></select></label>"
   "<label>Stop <select id='stop'><option value='1'>1</option><option value='2'>2</option></select></label>"
-  "<label>Enter <select id='enter'><option value='cr'>\\r</option><option value='lf'>\\n</option><option value='crlf' selected>\\r\\n</option></select></label>"
+  "<label>Enter <select id='enter'><option value='none'>none</option><option value='cr'>\\r</option><option value='lf'>\\n</option><option value='crlf' selected>\\r\\n</option></select></label>"
   "<label>Send <select id='sendmode'><option value='type'>as you type</option><option value='line'>on Enter only</option></select></label>"
   "<label>Decode <select id='decode'><option value='plain'>plain</option><option value='ansi'>ansi colors</option><option value='vt100'>vt100 (xterm.js)</option></select></label>"
   "<label><input id='hexview' type='checkbox'>hex view</label>"
@@ -152,8 +152,8 @@ static const char INDEX_HTML[] =
   "function processRxChunks(){if(!rxChunks.length){rxFlushTimer=null;return;}const parts=rxChunks;rxChunks=[];rxFlushTimer=null;let total=0;for(const p of parts)total+=p.length;const b=new Uint8Array(total);let o=0;for(const p of parts){b.set(p,o);o+=p.length;}pushRawLog(b);queueHex(b);"
   "const txt=dec.decode(b);if(decodeMode.value==='vt100'&&xterm){xterm.write(txt);appendTextLog(txt);}else if(decodeMode.value==='ansi')appendAnsi(txt);else appendTerm(txt);}"
   "function queueRx(bytes){rxChunks.push(bytes);if(rxFlushTimer===null)rxFlushTimer=setTimeout(processRxChunks,16);}"
-  "function enterBytes(){if(enterMode.value==='lf')return new Uint8Array([10]);if(enterMode.value==='crlf')return new Uint8Array([13,10]);return new Uint8Array([13]);}"
-  "function sendBinary(arr){if(ws.readyState===1)ws.send(arr);}"
+  "function enterBytes(){if(enterMode.value==='none')return new Uint8Array([]);if(enterMode.value==='lf')return new Uint8Array([10]);if(enterMode.value==='crlf')return new Uint8Array([13,10]);return new Uint8Array([13]);}"
+  "function sendBinary(arr){if(ws.readyState===1&&arr&&arr.length>0)ws.send(arr);}"
   "function sendTextLine(str){if(!str)return;sendBinary(enc.encode(str));}"
   "function parseByteInput(s){const toks=s.trim().split(/[\\s,]+/).filter(Boolean);const out=[];for(const t0 of toks){let t=t0.toLowerCase();if(t.startsWith('0x'))t=t.slice(2);"
   "if(!/^[0-9a-f]{1,2}$/.test(t))throw new Error('bad byte: '+t0);out.push(parseInt(t,16));}return new Uint8Array(out);}"
