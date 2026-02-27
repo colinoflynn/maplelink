@@ -4,6 +4,7 @@ cmake_minimum_required(VERSION 3.17)
 
 include(pico_sdk_import.cmake)
 project(picowebserverspi)
+find_package(Python3 COMPONENTS Interpreter REQUIRED)
 
 set(picotool_DIR "C:/devtools/picotool")
 set(BROWSERIO_XTERM_SOURCE "CDN" CACHE STRING "xterm.js source: CDN or LOCAL")
@@ -56,22 +57,54 @@ target_sources(picowebserverspi PUBLIC
   )
 
 if(BROWSERIO_XTERM_SOURCE STREQUAL "LOCAL")
+  set(BROWSERIO_XTERM_JS_PRIMARY "/xterm.js")
+  set(BROWSERIO_XTERM_JS_FALLBACK "/xterm.js")
+  set(BROWSERIO_XTERM_CSS "/xterm.css")
+else()
+  set(BROWSERIO_XTERM_JS_PRIMARY "https://unpkg.com/xterm@5.3.0/lib/xterm.js")
+  set(BROWSERIO_XTERM_JS_FALLBACK "https://unpkg.com/xterm/lib/xterm.js")
+  set(BROWSERIO_XTERM_CSS "https://unpkg.com/xterm@5.3.0/css/xterm.css")
+endif()
+
+set(BROWSERIO_GEN_DIR ${CMAKE_CURRENT_BINARY_DIR}/generated)
+set(BROWSERIO_INDEX_HDR ${BROWSERIO_GEN_DIR}/index_html_data.h)
+
+add_custom_command(
+  OUTPUT ${BROWSERIO_INDEX_HDR}
+  COMMAND ${CMAKE_COMMAND} -E make_directory ${BROWSERIO_GEN_DIR}
+  COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_LIST_DIR}/tools/embed_html.py
+          --input ${CMAKE_CURRENT_LIST_DIR}/src/web/index.html
+          --output ${BROWSERIO_INDEX_HDR}
+          --define XTERM_JS_PRIMARY=${BROWSERIO_XTERM_JS_PRIMARY}
+          --define XTERM_JS_FALLBACK=${BROWSERIO_XTERM_JS_FALLBACK}
+          --define XTERM_CSS_URL=${BROWSERIO_XTERM_CSS}
+  DEPENDS
+    ${CMAKE_CURRENT_LIST_DIR}/src/web/index.html
+    ${CMAKE_CURRENT_LIST_DIR}/tools/embed_html.py
+  VERBATIM
+)
+
+add_custom_target(generate_web_assets DEPENDS ${BROWSERIO_INDEX_HDR})
+add_dependencies(picowebserverspi generate_web_assets)
+
+if(BROWSERIO_XTERM_SOURCE STREQUAL "LOCAL")
   target_compile_definitions(picowebserverspi PUBLIC
     BROWSERIO_XTERM_SOURCE_LOCAL=1
-    BROWSERIO_XTERM_JS_URL_PRIMARY=\"/xterm.js\"
-    BROWSERIO_XTERM_JS_URL_FALLBACK=\"/xterm.js\"
-    BROWSERIO_XTERM_CSS_URL=\"/xterm.css\")
+    BROWSERIO_XTERM_JS_URL_PRIMARY=\"${BROWSERIO_XTERM_JS_PRIMARY}\"
+    BROWSERIO_XTERM_JS_URL_FALLBACK=\"${BROWSERIO_XTERM_JS_FALLBACK}\"
+    BROWSERIO_XTERM_CSS_URL=\"${BROWSERIO_XTERM_CSS}\")
 else()
   target_compile_definitions(picowebserverspi PUBLIC
     BROWSERIO_XTERM_SOURCE_LOCAL=0
-    BROWSERIO_XTERM_JS_URL_PRIMARY=\"https://unpkg.com/xterm@5.3.0/lib/xterm.js\"
-    BROWSERIO_XTERM_JS_URL_FALLBACK=\"https://unpkg.com/xterm/lib/xterm.js\"
-    BROWSERIO_XTERM_CSS_URL=\"https://unpkg.com/xterm@5.3.0/css/xterm.css\")
+    BROWSERIO_XTERM_JS_URL_PRIMARY=\"${BROWSERIO_XTERM_JS_PRIMARY}\"
+    BROWSERIO_XTERM_JS_URL_FALLBACK=\"${BROWSERIO_XTERM_JS_FALLBACK}\"
+    BROWSERIO_XTERM_CSS_URL=\"${BROWSERIO_XTERM_CSS}\")
 endif()
 
 # Example include
 target_include_directories(picowebserverspi PUBLIC
   ${CMAKE_CURRENT_LIST_DIR}/src
+  ${BROWSERIO_GEN_DIR}
   ${LWIP}/src/include
   ${LWIP}/src/include/ipv4
   ${LWIP}/src/include/lwip/apps
