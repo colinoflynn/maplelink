@@ -2,6 +2,7 @@
  * The MIT License (MIT)
  *
  * Copyright (c) 2020 Peter Lawrence
+ * Copyright (c) 2026 Colin O'Flynn
  *
  * influenced by lrndis https://github.com/fetisov/lrndis
  *
