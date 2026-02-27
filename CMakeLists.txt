@@ -155,7 +155,7 @@ target_sources(picowebserverspi PUBLIC
   ${LWIP}/src/apps/lwiperf/lwiperf.c
   )
 
-target_link_libraries(picowebserverspi PUBLIC pico_stdlib tinyusb_device tinyusb_board)
+target_link_libraries(picowebserverspi PUBLIC pico_stdlib hardware_spi tinyusb_device tinyusb_board)
 
 # due to warnings from other net source, we need to prevent error from some of the warnings options
 #if (CMAKE_C_COMPILER_ID STREQUAL "GNU")

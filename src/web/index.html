@@ -48,6 +48,15 @@
     .prate { color:#93c5fd; font-size:11px; }
     .pbar { height:8px; border:1px solid #334155; background:#0a1222; border-radius:6px; overflow:hidden; }
     .pbarfill { height:100%; width:0%; background:linear-gradient(90deg,#0ea5e9,#22c55e); }
+    .spiwire { display:grid; grid-template-columns:minmax(280px,420px) 1fr; gap:12px; align-items:start; }
+    .chip { border:1px solid #334155; background:#0b1220; border-radius:6px; padding:8px; }
+    .chip .ctitle { color:#93c5fd; font-size:12px; margin-bottom:6px; }
+    .chip pre { margin:0; color:#cbd5e1; font:12px/1.25 monospace; }
+    .wmap { width:100%; border-collapse:collapse; font-size:12px; }
+    .wmap th, .wmap td { border:1px solid #334155; padding:4px 6px; text-align:left; }
+    .wmap th { color:#93c5fd; background:#0b1220; }
+    .wpin { color:#a7f3d0; font-weight:bold; }
+    .warn { color:#fbbf24; font-size:12px; }
     #spidump { color:#93c5fd; font-size:12px; }
   </style>
 </head>
@@ -114,6 +123,35 @@
         </select></label>
         <button id="spisetspeed">Apply Speed</button>
         <span id="spist" class="dim">idle</span>
+      </div>
+    </div>
+    <div class="group">
+      <div class="gtitle">Wiring Guide (SOIC-8 SPI Flash)</div>
+      <div class="spiwire">
+        <div class="chip">
+          <div class="ctitle">Top View (Pin 1 dot/notch side)</div>
+          <pre>         .----.
+   /CS  1|    |8  VCC (3V3)
+   MISO 2|    |7  /HOLD
+   /WP  3|    |6  SCK
+   GND  4|____|5  MOSI</pre>
+        </div>
+        <div>
+          <table class="wmap">
+            <thead><tr><th>Flash Pin</th><th>Signal</th><th>Pico Connection</th></tr></thead>
+            <tbody>
+              <tr><td>1</td><td>/CS</td><td class="wpin" id="map-cs">GPIO17</td></tr>
+              <tr><td>2</td><td>DO / IO1 (MISO)</td><td class="wpin" id="map-miso">GPIO16</td></tr>
+              <tr><td>3</td><td>/WP / IO2</td><td>Pull-up to 3V3 (or optional GPIO)</td></tr>
+              <tr><td>4</td><td>GND</td><td>Pico GND</td></tr>
+              <tr><td>5</td><td>DI / IO0 (MOSI)</td><td class="wpin" id="map-mosi">GPIO19</td></tr>
+              <tr><td>6</td><td>SCK / CLK</td><td class="wpin" id="map-clk">GPIO18</td></tr>
+              <tr><td>7</td><td>/HOLD / IO3</td><td class="wpin" id="map-hold">GPIO21 (optional)</td></tr>
+              <tr><td>8</td><td>VCC</td><td>3V3</td></tr>
+            </tbody>
+          </table>
+          <div class="warn">UART is on GPIO0/GPIO1. SPI wiring above avoids conflict.</div>
+        </div>
       </div>
     </div>
     <div class="group">
@@ -194,6 +232,11 @@
     const spiDump=document.getElementById('spidump');
     const spiSt=document.getElementById('spist');
     const spiOut=document.getElementById('spiout');
+    const mapMosi=document.getElementById('map-mosi');
+    const mapMiso=document.getElementById('map-miso');
+    const mapCs=document.getElementById('map-cs');
+    const mapClk=document.getElementById('map-clk');
+    const mapHold=document.getElementById('map-hold');
     const pinUi={
       mosi:{state:document.getElementById('pin-mosi-state'),rate:document.getElementById('pin-mosi-rate'),bar:document.getElementById('pin-mosi-bar')},
       miso:{state:document.getElementById('pin-miso-state'),rate:document.getElementById('pin-miso-rate'),bar:document.getElementById('pin-miso-bar')},
@@ -252,6 +295,7 @@
     function spiSend(type,obj){const m=Object.assign({type:type,port:'spi0'},obj||{});send(m);}
     function parseNum(s,def){const n=parseInt(String(s||''),10);return Number.isFinite(n)?n:def;}
     function parseHexByte(s,def){let t=String(s||'').trim().toLowerCase();if(t.startsWith('0x'))t=t.slice(2);if(!/^[0-9a-f]{1,2}$/.test(t))return def;return parseInt(t,16);}
+    function setMap(el,pin,suffix){if(!el)return;el.textContent='GPIO'+pin+(suffix||'');}
     function setPinUi(pin,level,available,delta,dtMs){
       const u=pinUi[pin];if(!u)return;
       const base='pstate ';
@@ -277,6 +321,7 @@
         if(m.dump&&typeof m.dump.read_cmd==='number')spiDumpCmd.value='0x'+m.dump.read_cmd.toString(16);
         if(m.dump&&typeof m.dump.double_read==='boolean')spiDumpDbl.checked=m.dump.double_read;
         if(m.dump&&typeof m.dump.ff_opt==='boolean')spiDumpFf.checked=m.dump.ff_opt;
+        if(m.pins){if(typeof m.pins.mosi==='number')setMap(mapMosi,m.pins.mosi,'');if(typeof m.pins.miso==='number')setMap(mapMiso,m.pins.miso,'');if(typeof m.pins.cs==='number')setMap(mapCs,m.pins.cs,'');if(typeof m.pins.clk==='number')setMap(mapClk,m.pins.clk,'');if(typeof m.pins.hold==='number')setMap(mapHold,m.pins.hold,' (optional)');}
         spiSt.textContent='config loaded';spiSt.className='ok';spiLog('[spi.config] '+JSON.stringify(m));return true;
       }
       if(m.type==='spi.pins'){
