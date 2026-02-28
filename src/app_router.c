@@ -115,7 +115,12 @@ static bool dispatch_text(const char *type, const char *json) {
 }
 
 static void send_hello(void) {
-  (void)app_send_text("{\"type\":\"hello\",\"fw\":\"0.2.0\",\"caps\":[\"uart0\",\"spi0\",\"i2c0\",\"bootsel\",\"debug\"]}");
+  char out[224];
+  snprintf(out, sizeof(out),
+           "{\"type\":\"hello\",\"fw\":\"0.2.0\",\"build_date\":\"%s\",\"build_time\":\"%s\","
+           "\"caps\":[\"uart0\",\"spi0\",\"i2c0\",\"bootsel\",\"debug\"]}",
+           __DATE__, __TIME__);
+  (void)app_send_text(out);
 }
 
 static void on_open(ws_conn_t *conn) {
