@@ -11,6 +11,7 @@
 #define WS_SERVER_PORT 81
 #define WS_RX_BUF_LEN 2048
 #define WS_FRAME_MAX_PAYLOAD 512
+#define WS_TX_FRAME_BUF_LEN 1536
 
 typedef struct {
   uint32_t state[5];
@@ -33,6 +34,7 @@ struct ws_conn {
 
 static struct tcp_pcb *g_listen;
 static const ws_app_handler_t *g_handler;
+static uint8_t g_ws_tx_frame[WS_TX_FRAME_BUF_LEN];
 
 static uint32_t rol32(uint32_t x, uint32_t n) { return (x << n) | (x >> (32 - n)); }
 
@@ -169,6 +171,7 @@ static err_t tcp_write_all(struct tcp_pcb *pcb, const void *data, u16_t len) {
 static bool ws_send(ws_conn_t *conn, uint8_t opcode, const uint8_t *payload, uint16_t plen) {
   uint8_t hdr[4];
   int hlen;
+  uint16_t frame_len;
   err_t e;
 
   if (!conn || !conn->pcb || !conn->upgraded) return false;
@@ -184,14 +187,19 @@ static bool ws_send(ws_conn_t *conn, uint8_t opcode, const uint8_t *payload, uin
     hlen = 4;
   }
 
-  e = tcp_write_all(conn->pcb, hdr, (u16_t)hlen);
+  // WebSocket frames must be written atomically relative to retries. If we
+  // enqueue only part of a frame and then retry, the byte stream is corrupted.
+  frame_len = (uint16_t)(hlen + plen);
+  if (tcp_sndbuf(conn->pcb) < frame_len) return false;
+
+  if (frame_len > WS_TX_FRAME_BUF_LEN) return false;
+  memcpy(g_ws_tx_frame, hdr, (size_t)hlen);
+  if (plen > 0 && payload) memcpy(g_ws_tx_frame + hlen, payload, (size_t)plen);
+
+  // Enqueue header+payload as one TCP write so a retry never duplicates only
+  // part of a WebSocket frame.
+  e = tcp_write(conn->pcb, g_ws_tx_frame, frame_len, TCP_WRITE_FLAG_COPY);
   if (e != ERR_OK) return false;
-
-  if (plen > 0) {
-    e = tcp_write_all(conn->pcb, payload, plen);
-    if (e != ERR_OK) return false;
-  }
-
   return tcp_output(conn->pcb) == ERR_OK;
 }
 

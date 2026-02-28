@@ -31,6 +31,7 @@
 #define SPI_DUMP_WS_INTERVAL_MS 2u
 #define SPI_DUMP_FF_SCAN_MAX_BYTES 1024u
 #define SPI_DUMP_VERIFY_MAX_BYTES 128u
+#define SPI_DUMP_TX_FAIL_LIMIT 40u
 #define WS_BIN_MAGIC 0xB0u
 #define WS_CH_SPI_DUMP_DATA 0x02u
 #define WS_CH_SPI_DUMP_FF 0x03u
@@ -52,10 +53,13 @@ typedef struct {
   bool dump_double_read;
   uint8_t dump_verify_retries;
   bool dump_ff_opt;
+  uint32_t dump_start_addr;
+  bool dump_to_file;
   uint32_t dump_total_bytes;
   uint32_t dump_chunk_bytes;
   uint32_t dump_sent_bytes;
   uint32_t dump_verify_ok_count;
+  uint32_t dump_tx_fail_streak;
   uint32_t last_detect_ms;
   uint32_t last_idpoll_ms;
   uint32_t last_dump_ms;
@@ -109,6 +113,8 @@ static spi_state_t g_spi = {
     .dump_double_read = false,
     .dump_verify_retries = 0,
     .dump_ff_opt = true,
+    .dump_start_addr = 0,
+    .dump_to_file = true,
     .dump_total_bytes = 0,
     .dump_chunk_bytes = 256,
     .dump_sent_bytes = 0,
@@ -457,7 +463,8 @@ static void send_spi_state(void) {
            "\"tristate_default\":%s,\"pullups_enabled\":%s,\"hold_present\":%s,\"rst_present\":%s,"
            "\"speed_hz\":%lu,\"idpoll_interval_ms\":%lu,"
            "\"detect_enabled\":%s,\"sniffer_enabled\":%s,\"idpoll_enabled\":%s,\"idpoll_monitor_between\":%s,\"dump_enabled\":%s,"
-           "\"dump\":{\"addr_bytes\":%u,\"read_cmd\":%u,\"double_read\":%s,\"verify_retries\":%u,\"ff_opt\":%s}}",
+           "\"dump\":{\"addr_bytes\":%u,\"read_cmd\":%u,\"double_read\":%s,\"verify_retries\":%u,"
+           "\"ff_opt\":%s,\"start_addr\":%lu,\"to_file\":%s}}",
            (unsigned)SPI_MOSI_PIN, (unsigned)SPI_MISO_PIN, (unsigned)SPI_CS_PIN, (unsigned)SPI_SCK_PIN,
            (unsigned)SPI_RST_PIN, (unsigned)SPI_HOLD_PIN, g_spi.tristate_default ? "true" : "false",
            g_spi.pullups_enabled ? "true" : "false", g_spi.hold_present ? "true" : "false",
@@ -467,7 +474,8 @@ static void send_spi_state(void) {
            g_spi.idpoll_monitor_between ? "true" : "false",
            g_spi.dump_enabled ? "true" : "false", g_spi.dump_addr_bytes, g_spi.dump_read_cmd,
            g_spi.dump_double_read ? "true" : "false", g_spi.dump_verify_retries,
-           g_spi.dump_ff_opt ? "true" : "false");
+           g_spi.dump_ff_opt ? "true" : "false", (unsigned long)g_spi.dump_start_addr,
+           g_spi.dump_to_file ? "true" : "false");
   (void)app_send_text(out);
 }
 
@@ -639,7 +647,7 @@ static void handle_set_speed(const char *json) {
   send_spi_state();
 }
 
-static void handle_dump_start(const char *json) {
+static void handle_dump_start(const char *json, bool to_file) {
   uint32_t v;
   bool b;
 
@@ -648,6 +656,7 @@ static void handle_dump_start(const char *json) {
   if (json_extract_u32(json, "length_bytes", &v)) g_spi.dump_total_bytes = v;
   if (json_extract_u32(json, "chunk_bytes", &v)) g_spi.dump_chunk_bytes = v;
   if (json_extract_u32(json, "speed_hz", &v)) g_spi.speed_hz = clamp_u32(v, SPI_MIN_SPEED_HZ, SPI_MAX_SPEED_HZ);
+  if (json_extract_u32(json, "start_addr", &v)) g_spi.dump_start_addr = v;
   if (json_extract_bool(json, "double_read", &b)) g_spi.dump_double_read = b;
   if (json_extract_u32(json, "verify_retries", &v)) g_spi.dump_verify_retries = (uint8_t)(v > 20u ? 20u : v);
   if (json_extract_bool(json, "ff_opt", &b)) g_spi.dump_ff_opt = b;
@@ -660,12 +669,23 @@ static void handle_dump_start(const char *json) {
 
   g_spi.dump_sent_bytes = 0;
   g_spi.dump_verify_ok_count = 0;
+  g_spi.dump_tx_fail_streak = 0;
   g_spi.last_dump_ms = now_ms();
   g_spi.dump_enabled = true;
+  g_spi.dump_to_file = to_file;
   g_spi.idpoll_enabled = false;
   ensure_safe_exclusion();
-  spi_dbg(1, "dump start accepted");
-  send_spi_status("running", "dump started");
+  if (app_debug_level() >= 1u) {
+    char m[160];
+    snprintf(m, sizeof(m),
+             "dump start accepted: mode=%s total=%lu chunk=%lu start=0x%08lX",
+             to_file ? "dump" : "display",
+             (unsigned long)g_spi.dump_total_bytes,
+             (unsigned long)g_spi.dump_chunk_bytes,
+             (unsigned long)g_spi.dump_start_addr);
+    spi_dbg(1, m);
+  }
+  send_spi_status("running", to_file ? "dump started" : "display started");
   send_spi_state();
 }
 
@@ -781,7 +801,12 @@ bool proto_spi_handle_text(const char *type, const char *json) {
   }
 
   if (strcmp(type, "spi.dump.start") == 0) {
-    handle_dump_start(json);
+    handle_dump_start(json, true);
+    return true;
+  }
+
+  if (strcmp(type, "spi.display.start") == 0) {
+    handle_dump_start(json, false);
     return true;
   }
 
@@ -790,6 +815,15 @@ bool proto_spi_handle_text(const char *type, const char *json) {
     spi_release_master();
     spi_dbg(1, "dump stopped by user");
     send_spi_status("stopped", "dump stopped");
+    send_spi_state();
+    return true;
+  }
+
+  if (strcmp(type, "spi.display.stop") == 0) {
+    g_spi.dump_enabled = false;
+    spi_release_master();
+    spi_dbg(1, "display stopped by user");
+    send_spi_status("stopped", "display stopped");
     send_spi_state();
     return true;
   }
@@ -869,7 +903,7 @@ void proto_spi_poll(void) {
       g_spi.dump_enabled = false;
       spi_release_master();
       spi_dbg(1, "dump complete");
-      send_spi_status("complete", "dump finished");
+      send_spi_status("complete", g_spi.dump_to_file ? "dump finished" : "display finished");
       send_spi_state();
       return;
     }
@@ -884,7 +918,7 @@ void proto_spi_poll(void) {
     // long erased regions into a single ff_run event.
     if (g_spi.dump_ff_opt) {
       if (read_n > SPI_DUMP_FF_SCAN_MAX_BYTES) read_n = SPI_DUMP_FF_SCAN_MAX_BYTES;
-      ok = read_flash_region(g_spi.dump_sent_bytes, g_spi.dump_read_cmd, g_spi.dump_addr_bytes, g_spi.dump_buf, read_n);
+      ok = read_flash_region(g_spi.dump_start_addr + g_spi.dump_sent_bytes, g_spi.dump_read_cmd, g_spi.dump_addr_bytes, g_spi.dump_buf, read_n);
       if (!ok) {
         g_spi.dump_enabled = false;
         spi_release_master();
@@ -899,7 +933,7 @@ void proto_spi_poll(void) {
       if (!ff_run && n > SPI_DUMP_WS_DATA_BYTES) n = SPI_DUMP_WS_DATA_BYTES;
     } else {
       if (n > SPI_DUMP_WS_DATA_BYTES) n = SPI_DUMP_WS_DATA_BYTES;
-      ok = read_flash_region(g_spi.dump_sent_bytes, g_spi.dump_read_cmd, g_spi.dump_addr_bytes, g_spi.dump_buf, n);
+      ok = read_flash_region(g_spi.dump_start_addr + g_spi.dump_sent_bytes, g_spi.dump_read_cmd, g_spi.dump_addr_bytes, g_spi.dump_buf, n);
       if (!ok) {
         g_spi.dump_enabled = false;
         spi_release_master();
@@ -919,7 +953,7 @@ void proto_spi_poll(void) {
       bool match = false;
       if (vlen > SPI_DUMP_VERIFY_MAX_BYTES) vlen = SPI_DUMP_VERIFY_MAX_BYTES;
       for (attempt = 0; attempt <= g_spi.dump_verify_retries; attempt++) {
-        bool ok2 = read_flash_region(g_spi.dump_sent_bytes, g_spi.dump_read_cmd, g_spi.dump_addr_bytes, g_spi.dump_chk, vlen);
+        bool ok2 = read_flash_region(g_spi.dump_start_addr + g_spi.dump_sent_bytes, g_spi.dump_read_cmd, g_spi.dump_addr_bytes, g_spi.dump_chk, vlen);
         match = ok2 && (memcmp(g_spi.dump_buf, g_spi.dump_chk, vlen) == 0);
         if (match) break;
       }
@@ -943,12 +977,33 @@ void proto_spi_poll(void) {
 
     if (g_spi.dump_ff_opt && ff_run) {
       if (n_send > 0xFFFFu) n_send = 0xFFFFu;
-      if (!send_dump_ff_bin(g_spi.dump_sent_bytes, (uint16_t)n_send)) return;
+      if (!send_dump_ff_bin(g_spi.dump_start_addr + g_spi.dump_sent_bytes, (uint16_t)n_send)) {
+        g_spi.dump_tx_fail_streak++;
+        if (g_spi.dump_tx_fail_streak > SPI_DUMP_TX_FAIL_LIMIT) {
+          g_spi.dump_enabled = false;
+          spi_release_master();
+          (void)app_send_text("{\"type\":\"error\",\"code\":\"SPI_TX_BUSY\",\"msg\":\"stream stalled (tx busy)\"}");
+          send_spi_status("error", "stream stalled");
+          send_spi_state();
+        }
+        return;
+      }
     } else {
       if (n_send > SPI_DUMP_WS_DATA_BYTES) n_send = SPI_DUMP_WS_DATA_BYTES;
-      if (!send_dump_data_bin(g_spi.dump_sent_bytes, g_spi.dump_buf, (uint16_t)n_send)) return;
+      if (!send_dump_data_bin(g_spi.dump_start_addr + g_spi.dump_sent_bytes, g_spi.dump_buf, (uint16_t)n_send)) {
+        g_spi.dump_tx_fail_streak++;
+        if (g_spi.dump_tx_fail_streak > SPI_DUMP_TX_FAIL_LIMIT) {
+          g_spi.dump_enabled = false;
+          spi_release_master();
+          (void)app_send_text("{\"type\":\"error\",\"code\":\"SPI_TX_BUSY\",\"msg\":\"stream stalled (tx busy)\"}");
+          send_spi_status("error", "stream stalled");
+          send_spi_state();
+        }
+        return;
+      }
     }
 
+    g_spi.dump_tx_fail_streak = 0;
     g_spi.dump_sent_bytes += n_send;
     if (app_debug_level() >= 3u) {
       char m[96];
