@@ -48,6 +48,8 @@
     .prate { color:#93c5fd; font-size:11px; }
     .pbar { height:8px; border:1px solid #334155; background:#0a1222; border-radius:6px; overflow:hidden; }
     .pbarfill { height:100%; width:0%; background:linear-gradient(90deg,#0ea5e9,#22c55e); }
+    .snifmeta { font-size:12px; color:#cbd5e1; margin-top:8px; }
+    #sniffview { margin-top:8px; border:1px solid #334155; background:#0a1222; border-radius:6px; padding:8px; color:#93c5fd; font-size:12px; white-space:pre; overflow:auto; max-height:220px; }
     .spiwire { display:grid; grid-template-columns:minmax(280px,420px) 1fr; gap:12px; align-items:start; }
     .chip { border:1px solid #334155; background:#0b1220; border-radius:6px; padding:8px; }
     .chip .ctitle { color:#93c5fd; font-size:12px; margin-bottom:6px; }
@@ -61,6 +63,8 @@
     .idgrid { display:grid; grid-template-columns:130px 1fr; gap:4px 10px; }
     .idlbl { color:#93c5fd; }
     .idval { color:#e6edf3; }
+    .iw-clear { color:#22c55e; font-weight:bold; }
+    .iw-bad { color:#ef4444; font-weight:bold; }
     .dbar { margin-top:8px; border:1px solid #334155; background:#0b1220; border-radius:6px; padding:8px; }
     .dumpmeta { font-size:12px; color:#cbd5e1; margin-bottom:6px; }
     .dumprate { font-size:12px; color:#93c5fd; margin-top:4px; }
@@ -172,6 +176,13 @@
         <button id="spisniffstart">Start Sniffer</button>
         <button id="spisniffstop">Stop Sniffer</button>
       </div>
+      <div class="snifmeta">
+        Frames: <span id="sniffframes">0</span> |
+        Bytes: <span id="sniffbytes">0</span> |
+        Dropped: <span id="sniffdrop">0</span> |
+        Overflow: <span id="sniffof">no</span>
+      </div>
+      <div id="sniffview">sniffer frames will appear here (TX and RX columns)</div>
       <div class="bar" id="spipins">
         <div class="pinrow"><div>MOSI</div><div id="pin-mosi-state" class="pstate p-na">N/A</div><div id="pin-mosi-rate" class="prate">--</div><div class="pbar"><div id="pin-mosi-bar" class="pbarfill"></div></div></div>
         <div class="pinrow"><div>MISO</div><div id="pin-miso-state" class="pstate p-na">N/A</div><div id="pin-miso-rate" class="prate">--</div><div class="pbar"><div id="pin-miso-bar" class="pbarfill"></div></div></div>
@@ -185,6 +196,7 @@
       <div class="gtitle">ID Poll</div>
       <div class="grow">
         <label>ID Interval ms <input id="spiidint" type="number" min="50" max="5000" step="50" value="250"></label>
+        <label><input id="spiidmon" type="checkbox">Monitor activity between polls</label>
         <button id="spiidstart">Start ID Poll</button>
         <button id="spiidstop">Stop ID Poll</button>
         <span class="dim">Poll count: <span id="idpollcount">0</span></span>
@@ -196,6 +208,8 @@
           <div class="idlbl">Memory Type</div><div class="idval" id="idtype">--</div>
           <div class="idlbl">Capacity</div><div class="idval" id="idcap">--</div>
           <div class="idlbl">Decoded Summary</div><div class="idval" id="idsummary">--</div>
+          <div class="idlbl">Between Polls</div><div class="idval" id="idwindow">--</div>
+          <div class="idlbl">Window Activity</div><div class="idval" id="idwintr">--</div>
         </div>
       </div>
     </div>
@@ -289,6 +303,7 @@
     const spiHold=document.getElementById('spihold');
     const spiSpeed=document.getElementById('spispeed');
     const spiIdInt=document.getElementById('spiidint');
+    const spiIdMon=document.getElementById('spiidmon');
     const spiDumpCmd=document.getElementById('spidumpcmd');
     const spiDumpAddr=document.getElementById('spidumpaddr');
     const spiDumpLen=document.getElementById('spidumplen');
@@ -300,6 +315,11 @@
     const spiDump=document.getElementById('spidump');
     const spiSt=document.getElementById('spist');
     const spiOut=document.getElementById('spiout');
+    const sniffView=document.getElementById('sniffview');
+    const sniffFramesEl=document.getElementById('sniffframes');
+    const sniffBytesEl=document.getElementById('sniffbytes');
+    const sniffDropEl=document.getElementById('sniffdrop');
+    const sniffOfEl=document.getElementById('sniffof');
     const spiDumpLabel=document.getElementById('spidumplabel');
     const spiDumpRate=document.getElementById('spidumprate');
     const spiDumpProgress=document.getElementById('spidumpprogress');
@@ -309,6 +329,8 @@
     const idType=document.getElementById('idtype');
     const idCap=document.getElementById('idcap');
     const idSummary=document.getElementById('idsummary');
+    const idWindow=document.getElementById('idwindow');
+    const idWinTr=document.getElementById('idwintr');
     const mapMosi=document.getElementById('map-mosi');
     const mapMiso=document.getElementById('map-miso');
     const mapCs=document.getElementById('map-cs');
@@ -377,8 +399,15 @@
     let dumpLastRateBytes=0;
     let dumpRateEma=0;
     let dumpUiTimer=null;
+    let sniffFrames=0;
+    let sniffBytes=0;
+    let sniffDropped=0;
+    let sniffOverflow=false;
+    let sniffOffset=0;
+    let sniffLines=[];
     const MAX_SPI_LOG_LINES=300;
     const MAX_DBG_LOG_LINES=600;
+    const MAX_SNIFF_LINES=240;
     const WS_BIN_MAGIC=0xB0;
     const WS_CH_UART=0x01;
     const WS_CH_SPI_DUMP_DATA=0x02;
@@ -396,6 +425,32 @@
     function parseHexByte(s,def){let t=String(s||'').trim().toLowerCase();if(t.startsWith('0x'))t=t.slice(2);if(!/^[0-9a-f]{1,2}$/.test(t))return def;return parseInt(t,16);}
     function setMap(el,pin,suffix){if(!el)return;el.textContent='GPIO'+pin+(suffix||'');}
     function parseHexBytesLoose(s){const out=[];if(!s)return out;const toks=String(s).trim().split(/[\s,]+/).filter(Boolean);for(const t0 of toks){let t=t0.toLowerCase();if(t.startsWith('0x'))t=t.slice(2);if(!/^[0-9a-f]{1,2}$/.test(t))continue;out.push(parseInt(t,16));}return out;}
+    function resetSnifferUi(){sniffFrames=0;sniffBytes=0;sniffDropped=0;sniffOverflow=false;sniffOffset=0;sniffLines=[];sniffFramesEl.textContent='0';sniffBytesEl.textContent='0';sniffDropEl.textContent='0';sniffOfEl.textContent='no';sniffView.textContent='sniffer frames will appear here (TX and RX columns)';}
+    function appendSnifferFrame(m){
+      const tx=parseHexBytesLoose(m.tx_hex||'');
+      const rx=parseHexBytesLoose(m.rx_hex||'');
+      const n=Math.min(tx.length,rx.length);
+      const cols=16;
+      for(let i=0;i<n;i+=cols){
+        const t=tx.slice(i,i+cols), r=rx.slice(i,i+cols);
+        const off=(sniffOffset+i).toString(16).padStart(8,'0');
+        const th=t.map(b=>b.toString(16).padStart(2,'0')).join(' ').padEnd(cols*3-1,' ');
+        const rh=r.map(b=>b.toString(16).padStart(2,'0')).join(' ').padEnd(cols*3-1,' ');
+        sniffLines.push(off+'  TX '+th+'  RX '+rh);
+      }
+      sniffOffset+=parseNum(m.bytes_total, n);
+      while(sniffLines.length>MAX_SNIFF_LINES)sniffLines.shift();
+      sniffView.textContent=sniffLines.join('\n');
+      sniffView.scrollTop=sniffView.scrollHeight;
+      sniffFrames++;
+      sniffBytes+=parseNum(m.bytes_total,n);
+      sniffDropped+=parseNum(m.dropped,0);
+      sniffOverflow=sniffOverflow||!!m.overflow;
+      sniffFramesEl.textContent=String(sniffFrames);
+      sniffBytesEl.textContent=String(sniffBytes);
+      sniffDropEl.textContent=String(sniffDropped);
+      sniffOfEl.textContent=sniffOverflow?'yes':'no';
+    }
     function dumpRowsLimit(){return Math.max(1,Math.min(64,parseInt(spiDumpRows.value,10)||16));}
     function renderDumpRecent(){
       if(!dumpRecent.length){spiLastHex.textContent='last dump bytes will appear here';return;}
@@ -507,6 +562,7 @@
         if(typeof m.rst_present==='boolean')spiRst.checked=m.rst_present;
         if(m.speed_hz)spiSpeed.value=String(m.speed_hz);
         if(m.idpoll_interval_ms)spiIdInt.value=String(m.idpoll_interval_ms);
+        if(typeof m.idpoll_monitor_between==='boolean')spiIdMon.checked=m.idpoll_monitor_between;
         if(m.dump&&m.dump.addr_bytes)spiDumpAddr.value=String(m.dump.addr_bytes);
         if(m.dump&&typeof m.dump.read_cmd==='number')spiDumpCmd.value='0x'+m.dump.read_cmd.toString(16);
         if(m.dump&&typeof m.dump.double_read==='boolean')spiDumpDbl.checked=m.dump.double_read;
@@ -540,7 +596,16 @@
         else{idMfg.textContent='--';idType.textContent='--';idCap.textContent='--';idSummary.textContent='unable to decode';}
         spiSt.textContent='id '+(m.id_hex||'');spiSt.className='ok';spiLog('[spi.id] '+JSON.stringify(m));return true;
       }
-      if(m.type==='spi.sniffer.frame'){spiLog('[sniffer] '+(m.hex||JSON.stringify(m)));return true;}
+      if(m.type==='spi.idpoll.window'){
+        const tr=m.transitions||{};
+        const total=parseNum(m.total,0);
+        const clear=!!m.clear;
+        idWindow.textContent=clear?'CLEAR':'INTERFERENCE';
+        idWindow.className='idval '+(clear?'iw-clear':'iw-bad');
+        idWinTr.textContent='total '+total+' (MOSI '+parseNum(tr.mosi,0)+', MISO '+parseNum(tr.miso,0)+', CS '+parseNum(tr.cs,0)+', CLK '+parseNum(tr.clk,0)+')';
+        return true;
+      }
+      if(m.type==='spi.sniffer.frame'){appendSnifferFrame(m);return true;}
       if(m.type==='spi.dump.chunk'){
         const count=parseNum(m.count,0);
         if((m.offset||0)+count>dumpExpectedBytes)dumpExpectedBytes=(m.offset||0)+count;
@@ -628,10 +693,10 @@
     spiSetSpeedBtn.onclick=()=>spiSend('spi.set_speed',{speed_hz:parseNum(spiSpeed.value,1000000),idpoll_interval_ms:parseNum(spiIdInt.value,250)});
     spiDetectStartBtn.onclick=()=>spiSend('spi.detect.start');
     spiDetectStopBtn.onclick=()=>{spiSend('spi.detect.stop');resetPinUi();};
-    spiSniffStartBtn.onclick=()=>spiSend('spi.sniffer.start');
+    spiSniffStartBtn.onclick=()=>{resetSnifferUi();spiSend('spi.sniffer.start');};
     spiSniffStopBtn.onclick=()=>spiSend('spi.sniffer.stop');
-    spiIdStartBtn.onclick=()=>{idPollCount=0;idPollCountEl.textContent='0';spiSend('spi.idpoll.start',{interval_ms:parseNum(spiIdInt.value,250),speed_hz:parseNum(spiSpeed.value,1000000)});};
-    spiIdStopBtn.onclick=()=>{spiSend('spi.idpoll.stop');};
+    spiIdStartBtn.onclick=()=>{idPollCount=0;idPollCountEl.textContent='0';idWindow.textContent='--';idWindow.className='idval';idWinTr.textContent='--';spiSend('spi.idpoll.start',{interval_ms:parseNum(spiIdInt.value,250),speed_hz:parseNum(spiSpeed.value,1000000),monitor_between:spiIdMon.checked});};
+    spiIdStopBtn.onclick=()=>{spiSend('spi.idpoll.stop');idWindow.textContent='--';idWindow.className='idval';idWinTr.textContent='--';};
     spiDumpRows.addEventListener('input',renderDumpRecent);
     spiDumpStartBtn.onclick=()=>{spiSt.textContent='starting dump...';spiSt.className='dim';spiDump.textContent='dump: starting...';dumpExpectedBytes=parseNum(spiDumpLen.value,4096);dumpCapturedBytes=0;dumpRawChunks=[];dumpRecent=[];dumpDownloaded=false;dumpSessionActive=true;dumpStartMs=0;dumpLastRateMs=0;dumpLastRateBytes=0;dumpRateEma=0;if(dumpUiTimer){clearTimeout(dumpUiTimer);dumpUiTimer=null;}spiDumpRate.textContent='Rate: measuring...';renderDumpRecent();updateDumpProgress();spiSend('spi.dump.start',{read_cmd:parseHexByte(spiDumpCmd.value,0x03),addr_bytes:parseNum(spiDumpAddr.value,3),length_bytes:dumpExpectedBytes,chunk_bytes:parseNum(spiDumpChunk.value,256),double_read:spiDumpDbl.checked,ff_opt:spiDumpFf.checked,speed_hz:parseNum(spiSpeed.value,1000000)});};
     spiDumpStopBtn.onclick=()=>{spiSt.textContent='stopping dump...';spiSt.className='dim';spiDump.textContent='dump: stopping...';spiSend('spi.dump.stop');};
@@ -639,6 +704,7 @@
     setTab('terminal');
     syncDecodeMode();
     resetPinUi();
+    resetSnifferUi();
     keepCursor();
   </script>
 </body>

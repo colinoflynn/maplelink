@@ -41,6 +41,7 @@ typedef struct {
   bool detect_enabled;
   bool sniffer_enabled;
   bool idpoll_enabled;
+  bool idpoll_monitor_between;
   bool dump_enabled;
   bool hold_present;
   bool rst_present;
@@ -63,6 +64,12 @@ typedef struct {
   uint32_t tr_clk;
   uint32_t tr_rst;
   uint32_t tr_hold;
+  uint32_t base_tr_mosi;
+  uint32_t base_tr_miso;
+  uint32_t base_tr_cs;
+  uint32_t base_tr_clk;
+  uint32_t base_tr_rst;
+  uint32_t base_tr_hold;
   uint8_t lv_mosi;
   uint8_t lv_miso;
   uint8_t lv_cs;
@@ -76,6 +83,8 @@ typedef struct {
   uint8_t sniff_bit_count;
   uint8_t sniff_prev_clk;
   uint16_t sniff_len;
+  uint16_t sniff_dropped_frame;
+  uint32_t sniff_dropped_total;
   uint8_t sniff_tx[SPI_MAX_SNIFF_BYTES];
   uint8_t sniff_rx[SPI_MAX_SNIFF_BYTES];
   uint8_t dump_buf[SPI_MAX_DUMP_CHUNK];
@@ -88,6 +97,7 @@ static spi_state_t g_spi = {
     .detect_enabled = false,
     .sniffer_enabled = false,
     .idpoll_enabled = false,
+    .idpoll_monitor_between = false,
     .dump_enabled = false,
     .hold_present = false,
     .rst_present = false,
@@ -287,7 +297,7 @@ static void send_spi_state(void) {
            "\"pins\":{\"mosi\":%u,\"miso\":%u,\"cs\":%u,\"clk\":%u,\"rst\":%u,\"hold\":%u},"
            "\"tristate_default\":%s,\"pullups_enabled\":%s,\"hold_present\":%s,\"rst_present\":%s,"
            "\"speed_hz\":%lu,\"idpoll_interval_ms\":%lu,"
-           "\"detect_enabled\":%s,\"sniffer_enabled\":%s,\"idpoll_enabled\":%s,\"dump_enabled\":%s,"
+           "\"detect_enabled\":%s,\"sniffer_enabled\":%s,\"idpoll_enabled\":%s,\"idpoll_monitor_between\":%s,\"dump_enabled\":%s,"
            "\"dump\":{\"addr_bytes\":%u,\"read_cmd\":%u,\"double_read\":%s,\"ff_opt\":%s}}",
            (unsigned)SPI_MOSI_PIN, (unsigned)SPI_MISO_PIN, (unsigned)SPI_CS_PIN, (unsigned)SPI_SCK_PIN,
            (unsigned)SPI_RST_PIN, (unsigned)SPI_HOLD_PIN, g_spi.tristate_default ? "true" : "false",
@@ -295,6 +305,7 @@ static void send_spi_state(void) {
            g_spi.rst_present ? "true" : "false", (unsigned long)g_spi.speed_hz,
            (unsigned long)g_spi.idpoll_interval_ms, g_spi.detect_enabled ? "true" : "false",
            g_spi.sniffer_enabled ? "true" : "false", g_spi.idpoll_enabled ? "true" : "false",
+           g_spi.idpoll_monitor_between ? "true" : "false",
            g_spi.dump_enabled ? "true" : "false", g_spi.dump_addr_bytes, g_spi.dump_read_cmd,
            g_spi.dump_double_read ? "true" : "false", g_spi.dump_ff_opt ? "true" : "false");
   (void)app_send_text(out);
@@ -356,16 +367,36 @@ static void send_pin_snapshot(void) {
   (void)app_send_text(out);
 }
 
+static void snapshot_pin_levels_no_count(void) {
+  g_spi.lv_mosi = (uint8_t)gpio_get(SPI_MOSI_PIN);
+  g_spi.lv_miso = (uint8_t)gpio_get(SPI_MISO_PIN);
+  g_spi.lv_cs = (uint8_t)gpio_get(SPI_CS_PIN);
+  g_spi.lv_clk = (uint8_t)gpio_get(SPI_SCK_PIN);
+  if (g_spi.rst_present) g_spi.lv_rst = (uint8_t)gpio_get(SPI_RST_PIN);
+  if (g_spi.hold_present) g_spi.lv_hold = (uint8_t)gpio_get(SPI_HOLD_PIN);
+}
+
+static void set_idpoll_baseline(void) {
+  g_spi.base_tr_mosi = g_spi.tr_mosi;
+  g_spi.base_tr_miso = g_spi.tr_miso;
+  g_spi.base_tr_cs = g_spi.tr_cs;
+  g_spi.base_tr_clk = g_spi.tr_clk;
+  g_spi.base_tr_rst = g_spi.tr_rst;
+  g_spi.base_tr_hold = g_spi.tr_hold;
+}
+
 static void sniff_emit_frame(void) {
   char tx_hex[3 * 64];
   char rx_hex[3 * 64];
-  char out[700];
+  char out[760];
   uint16_t shown = g_spi.sniff_len > 64 ? 64 : g_spi.sniff_len;
   bytes_to_hex(g_spi.sniff_tx, shown, tx_hex, sizeof(tx_hex));
   bytes_to_hex(g_spi.sniff_rx, shown, rx_hex, sizeof(rx_hex));
   snprintf(out, sizeof(out),
-           "{\"type\":\"spi.sniffer.frame\",\"cs_frame\":1,\"tx_hex\":\"%s\",\"rx_hex\":\"%s\",\"bytes\":%u}",
-           tx_hex, rx_hex, (unsigned)g_spi.sniff_len);
+           "{\"type\":\"spi.sniffer.frame\",\"cs_frame\":1,\"tx_hex\":\"%s\",\"rx_hex\":\"%s\","
+           "\"bytes_captured\":%u,\"bytes_total\":%u,\"dropped\":%u,\"overflow\":%s}",
+           tx_hex, rx_hex, (unsigned)g_spi.sniff_len, (unsigned)(g_spi.sniff_len + g_spi.sniff_dropped_frame),
+           (unsigned)g_spi.sniff_dropped_frame, g_spi.sniff_dropped_frame ? "true" : "false");
   (void)app_send_text(out);
 }
 
@@ -377,16 +408,22 @@ static void sniff_sample(void) {
   if (cs == 0u && !g_spi.sniff_frame_active) {
     g_spi.sniff_frame_active = true;
     g_spi.sniff_len = 0;
+    g_spi.sniff_dropped_frame = 0;
     g_spi.sniff_cur_tx = 0;
     g_spi.sniff_cur_rx = 0;
     g_spi.sniff_bit_count = 0;
   }
 
   if (g_spi.sniff_frame_active && cs == 1u) {
-    if (g_spi.sniff_bit_count != 0u && g_spi.sniff_len < SPI_MAX_SNIFF_BYTES) {
-      g_spi.sniff_tx[g_spi.sniff_len] = (uint8_t)(g_spi.sniff_cur_tx << (8u - g_spi.sniff_bit_count));
-      g_spi.sniff_rx[g_spi.sniff_len] = (uint8_t)(g_spi.sniff_cur_rx << (8u - g_spi.sniff_bit_count));
-      g_spi.sniff_len++;
+    if (g_spi.sniff_bit_count != 0u) {
+      if (g_spi.sniff_len < SPI_MAX_SNIFF_BYTES) {
+        g_spi.sniff_tx[g_spi.sniff_len] = (uint8_t)(g_spi.sniff_cur_tx << (8u - g_spi.sniff_bit_count));
+        g_spi.sniff_rx[g_spi.sniff_len] = (uint8_t)(g_spi.sniff_cur_rx << (8u - g_spi.sniff_bit_count));
+        g_spi.sniff_len++;
+      } else {
+        g_spi.sniff_dropped_frame++;
+        g_spi.sniff_dropped_total++;
+      }
     }
     sniff_emit_frame();
     g_spi.sniff_frame_active = false;
@@ -407,6 +444,9 @@ static void sniff_sample(void) {
         g_spi.sniff_tx[g_spi.sniff_len] = g_spi.sniff_cur_tx;
         g_spi.sniff_rx[g_spi.sniff_len] = g_spi.sniff_cur_rx;
         g_spi.sniff_len++;
+      } else {
+        g_spi.sniff_dropped_frame++;
+        g_spi.sniff_dropped_total++;
       }
       g_spi.sniff_cur_tx = 0;
       g_spi.sniff_cur_rx = 0;
@@ -555,11 +595,15 @@ bool proto_spi_handle_text(const char *type, const char *json) {
 
   if (strcmp(type, "spi.idpoll.start") == 0) {
     uint32_t v;
+    bool b;
     if (json_extract_u32(json, "interval_ms", &v)) g_spi.idpoll_interval_ms = clamp_u32(v, SPI_MIN_IDPOLL_MS, SPI_MAX_IDPOLL_MS);
     if (json_extract_u32(json, "speed_hz", &v)) g_spi.speed_hz = clamp_u32(v, SPI_MIN_SPEED_HZ, SPI_MAX_SPEED_HZ);
+    if (json_extract_bool(json, "monitor_between", &b)) g_spi.idpoll_monitor_between = b;
     g_spi.idpoll_enabled = true;
     g_spi.dump_enabled = false;
     ensure_safe_exclusion();
+    snapshot_pin_levels_no_count();
+    set_idpoll_baseline();
     spi_dbg(1, "idpoll started");
     send_spi_status("idpoll", "enabled");
     send_spi_state();
@@ -595,7 +639,7 @@ bool proto_spi_handle_text(const char *type, const char *json) {
 void proto_spi_poll(void) {
   uint32_t now = now_ms();
 
-  if (g_spi.detect_enabled || g_spi.sniffer_enabled) {
+  if (g_spi.detect_enabled || g_spi.sniffer_enabled || (g_spi.idpoll_enabled && g_spi.idpoll_monitor_between)) {
     // Passive modes always release SPI peripheral ownership.
     if (g_spi.spi_active) spi_enter_passive_mode();
     poll_pin_levels_and_transitions();
@@ -605,7 +649,7 @@ void proto_spi_poll(void) {
     sniff_sample();
   }
 
-  if (g_spi.detect_enabled && (now - g_spi.last_detect_ms) >= 120u) {
+  if ((g_spi.detect_enabled || (g_spi.idpoll_enabled && g_spi.idpoll_monitor_between)) && (now - g_spi.last_detect_ms) >= 120u) {
     g_spi.last_detect_ms = now;
     send_pin_snapshot();
   }
@@ -614,7 +658,26 @@ void proto_spi_poll(void) {
     uint8_t tx[4] = {0x9Fu, 0x00u, 0x00u, 0x00u};
     uint8_t rx[4] = {0};
     char out[160];
+    uint32_t d_mosi = g_spi.tr_mosi - g_spi.base_tr_mosi;
+    uint32_t d_miso = g_spi.tr_miso - g_spi.base_tr_miso;
+    uint32_t d_cs = g_spi.tr_cs - g_spi.base_tr_cs;
+    uint32_t d_clk = g_spi.tr_clk - g_spi.base_tr_clk;
+    uint32_t d_rst = g_spi.tr_rst - g_spi.base_tr_rst;
+    uint32_t d_hold = g_spi.tr_hold - g_spi.base_tr_hold;
+    uint32_t total = d_mosi + d_miso + d_cs + d_clk + d_rst + d_hold;
     g_spi.last_idpoll_ms = now;
+
+    if (g_spi.idpoll_monitor_between) {
+      char win[320];
+      snprintf(win, sizeof(win),
+               "{\"type\":\"spi.idpoll.window\",\"between_ms\":%lu,\"clear\":%s,"
+               "\"transitions\":{\"mosi\":%lu,\"miso\":%lu,\"cs\":%lu,\"clk\":%lu,\"rst\":%lu,\"hold\":%lu},\"total\":%lu}",
+               (unsigned long)g_spi.idpoll_interval_ms, total == 0 ? "true" : "false",
+               (unsigned long)d_mosi, (unsigned long)d_miso, (unsigned long)d_cs,
+               (unsigned long)d_clk, (unsigned long)d_rst, (unsigned long)d_hold, (unsigned long)total);
+      (void)app_send_text(win);
+    }
+
     if (spi_xfer(tx, rx, sizeof(tx))) {
       uint8_t id[3] = {rx[1], rx[2], rx[3]};
       char id_hex[32];
@@ -627,6 +690,8 @@ void proto_spi_poll(void) {
     }
     // Per request, tri-state between repeated ID commands.
     spi_release_master();
+    snapshot_pin_levels_no_count();
+    set_idpoll_baseline();
   }
 
   if (g_spi.dump_enabled) {
