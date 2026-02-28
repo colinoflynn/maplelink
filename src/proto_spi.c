@@ -27,6 +27,9 @@
 #define SPI_MAX_IDPOLL_MS 5000u
 #define SPI_MAX_DUMP_CHUNK 4096u
 #define SPI_MAX_SNIFF_BYTES 512u
+#define SPI_DUMP_WS_HEX_BYTES 32u
+#define SPI_DUMP_WS_INTERVAL_MS 4u
+#define SPI_DUMP_FF_SCAN_MAX_BYTES 512u
 
 typedef struct {
   bool tristate_default;
@@ -48,6 +51,7 @@ typedef struct {
   uint32_t dump_sent_bytes;
   uint32_t last_detect_ms;
   uint32_t last_idpoll_ms;
+  uint32_t last_dump_ms;
   uint32_t tr_mosi;
   uint32_t tr_miso;
   uint32_t tr_cs;
@@ -99,6 +103,7 @@ static bool starts_with(const char *s, const char *prefix) {
 }
 
 static uint32_t now_ms(void) { return to_ms_since_boot(get_absolute_time()); }
+static void spi_dbg(uint8_t level, const char *msg) { (void)app_debug_log(level, "spi", msg); }
 
 static uint32_t clamp_u32(uint32_t v, uint32_t lo, uint32_t hi) {
   if (v < lo) return lo;
@@ -388,6 +393,7 @@ static void handle_set_io(const char *json) {
   if (json_extract_bool(json, "rst_present", &b)) g_spi.rst_present = b;
 
   if (g_spi.tristate_default) spi_apply_safe_io();
+  spi_dbg(2, "set_io applied");
   send_spi_state();
 }
 
@@ -398,6 +404,7 @@ static void handle_set_speed(const char *json) {
   if (g_spi.spi_active) {
     spi_set_baudrate(SPI_DEV, g_spi.speed_hz);
   }
+  spi_dbg(2, "speed settings applied");
   send_spi_state();
 }
 
@@ -420,9 +427,11 @@ static void handle_dump_start(const char *json) {
   if (g_spi.dump_chunk_bytes > SPI_MAX_DUMP_CHUNK) g_spi.dump_chunk_bytes = SPI_MAX_DUMP_CHUNK;
 
   g_spi.dump_sent_bytes = 0;
+  g_spi.last_dump_ms = now_ms();
   g_spi.dump_enabled = true;
   g_spi.idpoll_enabled = false;
   ensure_safe_exclusion();
+  spi_dbg(1, "dump start accepted");
   send_spi_status("running", "dump started");
   send_spi_state();
 }
@@ -431,6 +440,7 @@ void proto_spi_init(void) {
   uint32_t now = now_ms();
   g_spi.last_detect_ms = now;
   g_spi.last_idpoll_ms = now;
+  g_spi.last_dump_ms = now;
   g_spi.lv_mosi = 0;
   g_spi.lv_miso = 0;
   g_spi.lv_cs = 1;
@@ -455,6 +465,7 @@ bool proto_spi_handle_text(const char *type, const char *json) {
   if (!starts_with(type, "spi.")) return false;
 
   if (strcmp(type, "spi.get_config") == 0) {
+    spi_dbg(3, "get_config");
     send_spi_state();
     return true;
   }
@@ -472,6 +483,7 @@ bool proto_spi_handle_text(const char *type, const char *json) {
   if (strcmp(type, "spi.detect.start") == 0) {
     g_spi.detect_enabled = true;
     spi_enter_passive_mode();
+    spi_dbg(1, "detect started");
     send_spi_status("detect", "enabled");
     send_spi_state();
     return true;
@@ -479,6 +491,7 @@ bool proto_spi_handle_text(const char *type, const char *json) {
 
   if (strcmp(type, "spi.detect.stop") == 0) {
     g_spi.detect_enabled = false;
+    spi_dbg(1, "detect stopped");
     send_spi_status("detect", "disabled");
     send_spi_state();
     return true;
@@ -487,12 +500,14 @@ bool proto_spi_handle_text(const char *type, const char *json) {
   if (strcmp(type, "spi.sniffer.start") == 0) {
     if (g_spi.dump_enabled || g_spi.idpoll_enabled) {
       (void)app_send_text("{\"type\":\"error\",\"code\":\"SPI_BUSY\",\"msg\":\"sniffer blocked while idpoll/dump active\"}");
+      spi_dbg(1, "sniffer start blocked (busy)");
       return true;
     }
     g_spi.sniffer_enabled = true;
     g_spi.sniff_frame_active = false;
     g_spi.sniff_prev_clk = (uint8_t)gpio_get(SPI_SCK_PIN);
     spi_enter_passive_mode();
+    spi_dbg(1, "sniffer started");
     send_spi_status("sniffer", "enabled");
     send_spi_state();
     return true;
@@ -500,6 +515,7 @@ bool proto_spi_handle_text(const char *type, const char *json) {
 
   if (strcmp(type, "spi.sniffer.stop") == 0) {
     g_spi.sniffer_enabled = false;
+    spi_dbg(1, "sniffer stopped");
     send_spi_status("sniffer", "disabled");
     send_spi_state();
     return true;
@@ -512,6 +528,7 @@ bool proto_spi_handle_text(const char *type, const char *json) {
     g_spi.idpoll_enabled = true;
     g_spi.dump_enabled = false;
     ensure_safe_exclusion();
+    spi_dbg(1, "idpoll started");
     send_spi_status("idpoll", "enabled");
     send_spi_state();
     return true;
@@ -520,6 +537,7 @@ bool proto_spi_handle_text(const char *type, const char *json) {
   if (strcmp(type, "spi.idpoll.stop") == 0) {
     g_spi.idpoll_enabled = false;
     spi_release_master();
+    spi_dbg(1, "idpoll stopped");
     send_spi_status("idpoll", "disabled");
     send_spi_state();
     return true;
@@ -533,6 +551,7 @@ bool proto_spi_handle_text(const char *type, const char *json) {
   if (strcmp(type, "spi.dump.stop") == 0) {
     g_spi.dump_enabled = false;
     spi_release_master();
+    spi_dbg(1, "dump stopped by user");
     send_spi_status("stopped", "dump stopped");
     send_spi_state();
     return true;
@@ -572,30 +591,60 @@ void proto_spi_poll(void) {
       (void)app_send_text(out);
     } else {
       (void)app_send_text("{\"type\":\"spi.id.result\",\"ok\":false}");
+      spi_dbg(1, "idpoll transfer failed");
     }
     // Per request, tri-state between repeated ID commands.
     spi_release_master();
   }
 
   if (g_spi.dump_enabled) {
+    if ((now - g_spi.last_dump_ms) < SPI_DUMP_WS_INTERVAL_MS) return;
+    g_spi.last_dump_ms = now;
+
     uint32_t left = (g_spi.dump_total_bytes > g_spi.dump_sent_bytes) ? (g_spi.dump_total_bytes - g_spi.dump_sent_bytes) : 0u;
     if (left == 0u) {
       g_spi.dump_enabled = false;
       spi_release_master();
+      spi_dbg(1, "dump complete");
       send_spi_status("complete", "dump finished");
       send_spi_state();
       return;
     }
 
     uint32_t n = left > g_spi.dump_chunk_bytes ? g_spi.dump_chunk_bytes : left;
-    bool ok = read_flash_region(g_spi.dump_sent_bytes, g_spi.dump_read_cmd, g_spi.dump_addr_bytes, g_spi.dump_buf, n);
-    if (!ok) {
-      g_spi.dump_enabled = false;
-      spi_release_master();
-      (void)app_send_text("{\"type\":\"error\",\"code\":\"SPI_READ_FAILED\",\"msg\":\"dump read failed\"}");
-      send_spi_status("error", "dump read failed");
-      send_spi_state();
-      return;
+    uint32_t read_n = n;
+    bool ff_run = false;
+    bool ok;
+
+    // Read a larger window when FF optimization is enabled so we can collapse
+    // long erased regions into a single ff_run event.
+    if (g_spi.dump_ff_opt) {
+      if (read_n > SPI_DUMP_FF_SCAN_MAX_BYTES) read_n = SPI_DUMP_FF_SCAN_MAX_BYTES;
+      ok = read_flash_region(g_spi.dump_sent_bytes, g_spi.dump_read_cmd, g_spi.dump_addr_bytes, g_spi.dump_buf, read_n);
+      if (!ok) {
+        g_spi.dump_enabled = false;
+        spi_release_master();
+        (void)app_send_text("{\"type\":\"error\",\"code\":\"SPI_READ_FAILED\",\"msg\":\"dump read failed\"}");
+        spi_dbg(1, "dump read failed");
+        send_spi_status("error", "dump read failed");
+        send_spi_state();
+        return;
+      }
+      n = read_n;
+      ff_run = is_all_ff(g_spi.dump_buf, n);
+      if (!ff_run && n > SPI_DUMP_WS_HEX_BYTES) n = SPI_DUMP_WS_HEX_BYTES;
+    } else {
+      if (n > SPI_DUMP_WS_HEX_BYTES) n = SPI_DUMP_WS_HEX_BYTES;
+      ok = read_flash_region(g_spi.dump_sent_bytes, g_spi.dump_read_cmd, g_spi.dump_addr_bytes, g_spi.dump_buf, n);
+      if (!ok) {
+        g_spi.dump_enabled = false;
+        spi_release_master();
+        (void)app_send_text("{\"type\":\"error\",\"code\":\"SPI_READ_FAILED\",\"msg\":\"dump read failed\"}");
+        spi_dbg(1, "dump read failed");
+        send_spi_status("error", "dump read failed");
+        send_spi_state();
+        return;
+      }
     }
 
     if (g_spi.dump_double_read) {
@@ -605,29 +654,35 @@ void proto_spi_poll(void) {
       if (!match) {
         g_spi.dump_enabled = false;
         spi_release_master();
+        spi_dbg(1, "dump verify mismatch");
         send_spi_status("error", "double-read mismatch");
         send_spi_state();
         return;
       }
     }
 
-    if (g_spi.dump_ff_opt && is_all_ff(g_spi.dump_buf, n)) {
+    if (g_spi.dump_ff_opt && ff_run) {
       char out[160];
       snprintf(out, sizeof(out), "{\"type\":\"spi.dump.chunk\",\"mode\":\"ff_run\",\"offset\":%lu,\"count\":%lu}",
                (unsigned long)g_spi.dump_sent_bytes, (unsigned long)n);
-      (void)app_send_text(out);
+      if (!app_send_text(out)) return;
     } else {
-      char out[320];
-      char preview[3 * 24];
-      uint32_t pv = n > 24u ? 24u : n;
-      bytes_to_hex(g_spi.dump_buf, pv, preview, sizeof(preview));
+      char out[512];
+      char hx[(3 * SPI_DUMP_WS_HEX_BYTES) + 1];
+      bytes_to_hex(&g_spi.dump_buf[0], n, hx, sizeof(hx));
       snprintf(out, sizeof(out),
-               "{\"type\":\"spi.dump.chunk\",\"mode\":\"data\",\"offset\":%lu,\"hex_preview\":\"%s%s\",\"count\":%lu}",
-               (unsigned long)g_spi.dump_sent_bytes, preview, (n > pv) ? " ..." : "", (unsigned long)n);
-      (void)app_send_text(out);
+               "{\"type\":\"spi.dump.chunk\",\"mode\":\"data\",\"offset\":%lu,\"hex\":\"%s\",\"count\":%lu}",
+               (unsigned long)g_spi.dump_sent_bytes, hx, (unsigned long)n);
+      if (!app_send_text(out)) return;
     }
 
     g_spi.dump_sent_bytes += n;
+    if (app_debug_level() >= 3u) {
+      char m[96];
+      snprintf(m, sizeof(m), "dump chunk sent: %lu/%lu", (unsigned long)g_spi.dump_sent_bytes,
+               (unsigned long)g_spi.dump_total_bytes);
+      spi_dbg(3, m);
+    }
     if (g_spi.tristate_default) spi_release_master();
   }
 }
