@@ -71,12 +71,16 @@
     .prog { width:100%; height:14px; }
     #spilasthex { margin-top:8px; border:1px solid #334155; background:#0a1222; border-radius:6px; padding:8px; color:#93c5fd; font-size:12px; white-space:pre; overflow:auto; max-height:220px; }
     #spidump { color:#93c5fd; font-size:12px; }
+    .rawrow { display:grid; grid-template-columns:minmax(260px,1fr) auto auto; gap:8px; align-items:center; margin-bottom:6px; }
+    .rawrow input[type="text"] { width:100%; }
+    #rawout { height:calc(100vh - 280px); overflow:auto; padding:10px; white-space:pre-wrap; border-top:1px solid #1f2937; color:#cbd5e1; background:#0a1222; }
   </style>
 </head>
 <body>
   <div class="bar tabs">
     <button id="tabTerm" class="tabbtn active">Terminal</button>
     <button id="tabSpi" class="tabbtn">SPI FLASH</button>
+    <button id="tabRaw" class="tabbtn">SPI RAW</button>
     <button id="tabDebug" class="tabbtn">DEBUG</button>
   </div>
 
@@ -288,6 +292,27 @@
     <div id="spiout"></div>
   </div>
 
+  <div id="rawPanel" class="hidden">
+    <div class="group">
+      <div class="gtitle">SPI Raw Commands</div>
+      <div class="grow">
+        <label>Speed <select id="spispeedraw">
+          <option value="10000">10 kHz</option><option value="200000">200 kHz</option>
+          <option value="500000">500 kHz</option><option value="1000000" selected>1 MHz</option>
+          <option value="2000000">2 MHz</option><option value="5000000">5 MHz</option>
+          <option value="10000000">10 MHz</option>
+        </select></label>
+        <button id="spisetspeedraw">Apply Speed</button>
+        <span class="dim">Uses same SPI interface/safety settings as SPI FLASH.</span>
+      </div>
+    </div>
+    <div class="group" id="rawcmds">
+      <div class="gtitle">Command Rows</div>
+    </div>
+    <div class="bar">Raw TX/RX Log</div>
+    <div id="rawout"></div>
+  </div>
+
   <div id="debugPanel" class="hidden">
     <div class="group">
       <div class="gtitle">About</div>
@@ -333,9 +358,11 @@
     const shell=document.getElementById('shell');
     const terminalPanel=document.getElementById('terminalPanel');
     const spiPanel=document.getElementById('spiPanel');
+    const rawPanel=document.getElementById('rawPanel');
     const debugPanel=document.getElementById('debugPanel');
     const tabTerm=document.getElementById('tabTerm');
     const tabSpi=document.getElementById('tabSpi');
+    const tabRaw=document.getElementById('tabRaw');
     const tabDebug=document.getElementById('tabDebug');
     const bootselBtn=document.getElementById('bootsel');
     const dbgLevel=document.getElementById('dbgLevel');
@@ -349,6 +376,7 @@
     const spiCfgBtn=document.getElementById('spicfg');
     const spiApplyIoBtn=document.getElementById('spiapplyio');
     const spiSetSpeedBtn=document.getElementById('spisetspeed');
+    const spiSetSpeedRawBtn=document.getElementById('spisetspeedraw');
     const spiDetectStartBtn=document.getElementById('spidetectstart');
     const spiDetectStopBtn=document.getElementById('spidetectstop');
     const spiSniffStartBtn=document.getElementById('spisniffstart');
@@ -366,6 +394,7 @@
     const spiTriState=document.getElementById('spitristate');
     const spiPullups=document.getElementById('spipullups');
     const spiSpeed=document.getElementById('spispeed');
+    const spiSpeedRaw=document.getElementById('spispeedraw');
     const spiIdInt=document.getElementById('spiidint');
     const spiIdMon=document.getElementById('spiidmon');
     const spiDumpCmd3=document.getElementById('spidumpcmd3');
@@ -383,6 +412,8 @@
     const spiDump=document.getElementById('spidump');
     const spiSt=document.getElementById('spist');
     const spiOut=document.getElementById('spiout');
+    const rawOut=document.getElementById('rawout');
+    const rawCmds=document.getElementById('rawcmds');
     const sniffView=document.getElementById('sniffview');
     const sniffFramesEl=document.getElementById('sniffframes');
     const sniffBytesEl=document.getElementById('sniffbytes');
@@ -504,10 +535,30 @@
     const WS_CH_SPI_DUMP_FF=0x03;
 
     function markDirty(v){if(v){applyBtn.classList.add('pending');dirty.classList.add('show');}else{applyBtn.classList.remove('pending');dirty.classList.remove('show');}}
-    function setTab(tab){activeTab=tab;const t=tab==='terminal';const s=tab==='spi';const d=tab==='debug';terminalPanel.classList.toggle('hidden',!t);spiPanel.classList.toggle('hidden',!s);debugPanel.classList.toggle('hidden',!d);tabTerm.classList.toggle('active',t);tabSpi.classList.toggle('active',s);tabDebug.classList.toggle('active',d);if(t)term.focus();}
+    function setTab(tab){activeTab=tab;const t=tab==='terminal';const s=tab==='spi';const r=tab==='raw';const d=tab==='debug';terminalPanel.classList.toggle('hidden',!t);spiPanel.classList.toggle('hidden',!s);rawPanel.classList.toggle('hidden',!r);debugPanel.classList.toggle('hidden',!d);tabTerm.classList.toggle('active',t);tabSpi.classList.toggle('active',s);tabRaw.classList.toggle('active',r);tabDebug.classList.toggle('active',d);if(t)term.focus();}
     function appendLogLine(host,maxLines,s,cls){const line=document.createElement('div');if(cls)line.className=cls;line.textContent=s;host.appendChild(line);while(host.childElementCount>maxLines)host.removeChild(host.firstChild);host.scrollTop=host.scrollHeight;}
     function spiLog(s,cls){appendLogLine(spiOut,MAX_SPI_LOG_LINES,s,cls);}
     function dbgLog(s,cls){appendLogLine(dbgOut,MAX_DBG_LOG_LINES,s,cls);}
+    function rawLog(s,cls){appendLogLine(rawOut,MAX_SPI_LOG_LINES,s,cls);}
+    function buildRawRows(){
+      for(let i=0;i<10;i++){
+        const row=document.createElement('div');
+        row.className='rawrow';
+        row.innerHTML='<input type="text" data-rawtx="'+i+'" placeholder="hex data (e.g. 9F or 0B000000)">'
+          +"<label>Append FF x <input type=\"number\" data-rawff=\""+i+"\" min=\"0\" max=\"255\" step=\"1\" value=\"0\" style=\"width:72px\"></label>"
+          +'<button data-rawsend="'+i+'">Data In/Out</button>';
+        rawCmds.appendChild(row);
+      }
+      rawCmds.querySelectorAll('button[data-rawsend]').forEach(btn=>{
+        btn.addEventListener('click',()=>{
+          const idx=btn.getAttribute('data-rawsend');
+          const tx=(rawCmds.querySelector('input[data-rawtx="'+idx+'"]')?.value||'').trim();
+          const ff=parseNum(rawCmds.querySelector('input[data-rawff="'+idx+'"]')?.value,0);
+          if(!tx){rawLog('[raw] empty tx on row '+(parseNum(idx,0)+1),'err');return;}
+          spiSend('spi.raw.txrx',{tx_hex:tx,ff_tail:Math.max(0,Math.min(255,ff)),speed_hz:parseNum(spiSpeedRaw.value,1000000)});
+        });
+      });
+    }
     function spiSend(type,obj){const m=Object.assign({type:type,port:'spi0'},obj||{});send(m);}
     function parseNum(s,def){const n=parseInt(String(s||''),10);return Number.isFinite(n)?n:def;}
     function parseHexU32(s,def){let t=String(s||'').trim().toLowerCase();if(t.startsWith('0x'))t=t.slice(2);if(!/^[0-9a-f]{1,8}$/.test(t))return def>>>0;return (parseInt(t,16)>>>0);}
@@ -675,6 +726,7 @@
         if(typeof m.tristate_default==='boolean')spiTriState.checked=m.tristate_default;
         if(typeof m.pullups_enabled==='boolean')spiPullups.checked=m.pullups_enabled;
         if(m.speed_hz)spiSpeed.value=String(m.speed_hz);
+        if(m.speed_hz)spiSpeedRaw.value=String(m.speed_hz);
         if(m.idpoll_interval_ms)spiIdInt.value=String(m.idpoll_interval_ms);
         if(typeof m.idpoll_monitor_between==='boolean')spiIdMon.checked=m.idpoll_monitor_between;
         if(m.dump&&m.dump.addr_bytes)spiDumpAddr.value=String(m.dump.addr_bytes);
@@ -787,6 +839,13 @@
         spiQe.textContent=m.qe?'1':'0/unknown';
         return true;
       }
+      if(m.type==='spi.raw.result'){
+        if(!m.ok){rawLog('[raw] error: '+(m.msg||'transfer failed'),'err');return true;}
+        rawLog('TX ['+parseNum(m.tx_len,0)+'B]: '+(m.tx_hex||''));
+        rawLog('RX ['+parseNum(m.tx_len,0)+'B]: '+(m.rx_hex||''),'ok');
+        rawLog('');
+        return true;
+      }
       if(m.type==='spi.sniffer.frame'){appendSnifferFrame(m);return true;}
       if(m.type==='spi.dump.chunk'){
         const count=parseNum(m.count,0);
@@ -863,9 +922,12 @@
     hexCols.addEventListener('input',()=>{hexOffset=0;hex.textContent='';});
     retainKb.addEventListener('input',()=>{if(xterm)xterm.options.scrollback=xtermScrollback();});
     decodeMode.addEventListener('change',syncDecodeMode);
+    spiSpeed.addEventListener('change',()=>{spiSpeedRaw.value=spiSpeed.value;});
+    spiSpeedRaw.addEventListener('change',()=>{spiSpeed.value=spiSpeedRaw.value;});
     hexView.onchange=()=>{if(hexView.checked){shell.classList.add('hex');}else{shell.classList.remove('hex');pendingHexChunks=[];pendingHexBytes=0;if(hexTimer){clearTimeout(hexTimer);hexTimer=null;}}};
     tabTerm.onclick=()=>setTab('terminal');
     tabSpi.onclick=()=>setTab('spi');
+    tabRaw.onclick=()=>setTab('raw');
     tabDebug.onclick=()=>setTab('debug');
     dbgApply.onclick=()=>send({type:'system.set_debug',level:parseNum(dbgLevel.value,1)});
     dbgGet.onclick=()=>send({type:'system.get_debug'});
@@ -874,6 +936,7 @@
     spiCfgBtn.onclick=()=>spiSend('spi.get_config');
     spiApplyIoBtn.onclick=()=>spiSend('spi.set_io',{tristate_default:spiTriState.checked,pullups_enabled:spiPullups.checked});
     spiSetSpeedBtn.onclick=()=>spiSend('spi.set_speed',{speed_hz:parseNum(spiSpeed.value,1000000),idpoll_interval_ms:parseNum(spiIdInt.value,250)});
+    spiSetSpeedRawBtn.onclick=()=>spiSend('spi.set_speed',{speed_hz:parseNum(spiSpeedRaw.value,1000000),idpoll_interval_ms:parseNum(spiIdInt.value,250)});
     spiDetectStartBtn.onclick=()=>spiSend('spi.detect.start');
     spiDetectStopBtn.onclick=()=>{spiSend('spi.detect.stop');resetPinUi();};
     spiSniffStartBtn.onclick=()=>{resetSnifferUi();spiSend('spi.sniffer.start');};
@@ -909,6 +972,7 @@
     term.addEventListener('keydown',(e)=>{if(decodeMode.value==='vt100')return;if(ws.readyState!==1)return;if(sendMode.value==='type'){if(e.key==='Enter'){sendBinary(enterBytes());if(localEcho.checked)appendTerm('\n','dim');}else if(e.key==='Backspace'){sendBinary(new Uint8Array([127]));if(localEcho.checked)appendTerm('\b','dim');}else if(e.key.length===1){sendBinary(enc.encode(e.key));if(localEcho.checked)appendTerm(e.key,'dim');}else return;}else{if(e.key==='Enter'){sendTextLine(lineBuf);sendBinary(enterBytes());if(localEcho.checked)appendTerm('\n','dim');lineBuf='';}else if(e.key==='Backspace'){if(lineBuf.length>0)lineBuf=lineBuf.slice(0,-1);}else if(e.key.length===1){lineBuf+=e.key;if(localEcho.checked)appendTerm(e.key,'dim');}else return;}e.preventDefault();});
     setTab('terminal');
     syncDecodeMode();
+    buildRawRows();
     resetPinUi();
     resetSnifferUi();
     updateReadRanges();

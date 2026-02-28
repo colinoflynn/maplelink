@@ -30,6 +30,7 @@
 #define SPI_DUMP_FF_SCAN_MAX_BYTES 1024u
 #define SPI_DUMP_VERIFY_MAX_BYTES 128u
 #define SPI_DUMP_TX_FAIL_LIMIT 40u
+#define SPI_RAW_MAX_BYTES 256u
 #define WS_BIN_MAGIC 0xB0u
 #define WS_CH_SPI_DUMP_DATA 0x02u
 #define WS_CH_SPI_DUMP_FF 0x03u
@@ -231,6 +232,60 @@ static bool json_extract_bool(const char *json, const char *key, bool *out) {
   return false;
 }
 
+static bool json_extract_string(const char *json, const char *key, char *out, size_t out_sz) {
+  char pattern[40];
+  const char *p;
+  const char *e;
+  size_t n;
+
+  if (!json || !key || !out || out_sz < 2u) return false;
+  snprintf(pattern, sizeof(pattern), "\"%s\":\"", key);
+  p = strstr(json, pattern);
+  if (!p) return false;
+  p += strlen(pattern);
+  e = strchr(p, '"');
+  if (!e) return false;
+  n = (size_t)(e - p);
+  if (n == 0u || n >= out_sz) return false;
+  memcpy(out, p, n);
+  out[n] = 0;
+  return true;
+}
+
+static int hex_nibble(char c) {
+  if (c >= '0' && c <= '9') return (int)(c - '0');
+  if (c >= 'a' && c <= 'f') return (int)(c - 'a' + 10);
+  if (c >= 'A' && c <= 'F') return (int)(c - 'A' + 10);
+  return -1;
+}
+
+static bool parse_hex_flexible(const char *in, uint8_t *out, uint32_t out_cap, uint32_t *out_len) {
+  int hi = -1;
+  uint32_t n = 0;
+  if (!in || !out || !out_len) return false;
+  for (const char *p = in; *p; p++) {
+    int v = hex_nibble(*p);
+    if (v >= 0) {
+      if (hi < 0) hi = v;
+      else {
+        if (n >= out_cap) return false;
+        out[n++] = (uint8_t)((hi << 4) | v);
+        hi = -1;
+      }
+    } else if (*p == 'x' || *p == 'X') {
+      // optional 0x marker: if we saw only leading '0', drop it
+      if (hi == 0) hi = -1;
+    } else if (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n' || *p == ',') {
+      // separators
+    } else {
+      return false;
+    }
+  }
+  if (hi >= 0) return false;
+  *out_len = n;
+  return true;
+}
+
 static void bytes_to_hex(const uint8_t *in, size_t n, char *out, size_t out_len) {
   size_t used = 0;
   if (out_len == 0) return;
@@ -342,6 +397,60 @@ static void handle_status_read(const char *json) {
            (sr1 & 0x40u) ? "true" : "false",
            (sr1 & 0x80u) ? "true" : "false",
            (sr2 & 0x02u) ? "true" : "false");
+  (void)app_send_text(out);
+  if (g_spi.tristate_default) spi_release_master();
+}
+
+static void handle_raw_txrx(const char *json) {
+  uint8_t tx[SPI_RAW_MAX_BYTES];
+  uint8_t rx[SPI_RAW_MAX_BYTES];
+  char tx_hex_in[3 * SPI_RAW_MAX_BYTES + 8];
+  char tx_hex_out[3 * SPI_RAW_MAX_BYTES];
+  char rx_hex_out[3 * SPI_RAW_MAX_BYTES];
+  char out[3 * SPI_RAW_MAX_BYTES * 2 + 160];
+  uint32_t tx_len = 0;
+  uint32_t ff_tail = 0;
+  uint32_t speed_hz = 0;
+  uint32_t total;
+  bool ok;
+
+  if (g_spi.dump_enabled || g_spi.idpoll_enabled || g_spi.sniffer_enabled) {
+    (void)app_send_text("{\"type\":\"error\",\"code\":\"SPI_BUSY\",\"msg\":\"raw txrx blocked while dump/idpoll/sniffer active\"}");
+    return;
+  }
+
+  if (!json_extract_string(json, "tx_hex", tx_hex_in, sizeof(tx_hex_in))) {
+    (void)app_send_text("{\"type\":\"error\",\"code\":\"SPI_BAD_TX\",\"msg\":\"missing tx_hex\"}");
+    return;
+  }
+  if (!parse_hex_flexible(tx_hex_in, tx, SPI_RAW_MAX_BYTES, &tx_len) || tx_len == 0u) {
+    (void)app_send_text("{\"type\":\"error\",\"code\":\"SPI_BAD_TX\",\"msg\":\"invalid hex data\"}");
+    return;
+  }
+  (void)json_extract_u32(json, "ff_tail", &ff_tail);
+  if (json_extract_u32(json, "speed_hz", &speed_hz)) {
+    g_spi.speed_hz = clamp_u32(speed_hz, SPI_MIN_SPEED_HZ, SPI_MAX_SPEED_HZ);
+  }
+
+  total = tx_len + ff_tail;
+  if (total == 0u || total > SPI_RAW_MAX_BYTES) {
+    (void)app_send_text("{\"type\":\"error\",\"code\":\"SPI_TX_TOO_LONG\",\"msg\":\"raw tx exceeds max transaction size\"}");
+    return;
+  }
+  for (uint32_t i = tx_len; i < total; i++) tx[i] = 0xFFu;
+
+  ok = spi_xfer(tx, rx, total);
+  if (!ok) {
+    (void)app_send_text("{\"type\":\"spi.raw.result\",\"ok\":false,\"msg\":\"transfer failed\"}");
+    if (g_spi.tristate_default) spi_release_master();
+    return;
+  }
+
+  bytes_to_hex(tx, total, tx_hex_out, sizeof(tx_hex_out));
+  bytes_to_hex(rx, total, rx_hex_out, sizeof(rx_hex_out));
+  snprintf(out, sizeof(out),
+           "{\"type\":\"spi.raw.result\",\"ok\":true,\"tx_len\":%lu,\"ff_tail\":%lu,\"tx_hex\":\"%s\",\"rx_hex\":\"%s\"}",
+           (unsigned long)total, (unsigned long)ff_tail, tx_hex_out, rx_hex_out);
   (void)app_send_text(out);
   if (g_spi.tristate_default) spi_release_master();
 }
@@ -838,6 +947,10 @@ bool proto_spi_handle_text(const char *type, const char *json) {
   }
   if (strcmp(type, "spi.status.read") == 0) {
     handle_status_read(json);
+    return true;
+  }
+  if (strcmp(type, "spi.raw.txrx") == 0) {
+    handle_raw_txrx(json);
     return true;
   }
 
