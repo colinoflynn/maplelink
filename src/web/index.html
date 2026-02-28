@@ -489,6 +489,16 @@
       const norm=Math.min(1,Math.log10(hz+1)/5); // 100 kHz ~= full scale
       u.bar.style.width=Math.round(norm*100)+'%';
     }
+    function resetPinUi(){
+      setPinUi('mosi',0,false,0,0);
+      setPinUi('miso',0,false,0,0);
+      setPinUi('cs',0,false,0,0);
+      setPinUi('clk',0,false,0,0);
+      setPinUi('rst',0,false,0,0);
+      setPinUi('hold',0,false,0,0);
+      pinPrevTs=0;
+      pinPrevTr={mosi:0,miso:0,cs:0,clk:0,rst:0,hold:0};
+    }
     function handleSpiMessage(m){
       if(m.type==='spi.config'){
         if(typeof m.tristate_default==='boolean')spiTriState.checked=m.tristate_default;
@@ -617,7 +627,7 @@
     spiApplyIoBtn.onclick=()=>spiSend('spi.set_io',{tristate_default:spiTriState.checked,pullups_enabled:spiPullups.checked,hold_present:spiHold.checked,rst_present:spiRst.checked});
     spiSetSpeedBtn.onclick=()=>spiSend('spi.set_speed',{speed_hz:parseNum(spiSpeed.value,1000000),idpoll_interval_ms:parseNum(spiIdInt.value,250)});
     spiDetectStartBtn.onclick=()=>spiSend('spi.detect.start');
-    spiDetectStopBtn.onclick=()=>spiSend('spi.detect.stop');
+    spiDetectStopBtn.onclick=()=>{spiSend('spi.detect.stop');resetPinUi();};
     spiSniffStartBtn.onclick=()=>spiSend('spi.sniffer.start');
     spiSniffStopBtn.onclick=()=>spiSend('spi.sniffer.stop');
     spiIdStartBtn.onclick=()=>{idPollCount=0;idPollCountEl.textContent='0';spiSend('spi.idpoll.start',{interval_ms:parseNum(spiIdInt.value,250),speed_hz:parseNum(spiSpeed.value,1000000)});};
@@ -628,6 +638,7 @@
     term.addEventListener('keydown',(e)=>{if(decodeMode.value==='vt100')return;if(ws.readyState!==1)return;if(sendMode.value==='type'){if(e.key==='Enter'){sendBinary(enterBytes());if(localEcho.checked)appendTerm('\n','dim');}else if(e.key==='Backspace'){sendBinary(new Uint8Array([127]));if(localEcho.checked)appendTerm('\b','dim');}else if(e.key.length===1){sendBinary(enc.encode(e.key));if(localEcho.checked)appendTerm(e.key,'dim');}else return;}else{if(e.key==='Enter'){sendTextLine(lineBuf);sendBinary(enterBytes());if(localEcho.checked)appendTerm('\n','dim');lineBuf='';}else if(e.key==='Backspace'){if(lineBuf.length>0)lineBuf=lineBuf.slice(0,-1);}else if(e.key.length===1){lineBuf+=e.key;if(localEcho.checked)appendTerm(e.key,'dim');}else return;}e.preventDefault();});
     setTab('terminal');
     syncDecodeMode();
+    resetPinUi();
     keepCursor();
   </script>
 </body>
