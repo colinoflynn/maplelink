@@ -50,6 +50,7 @@ typedef struct {
   uint8_t dump_addr_bytes;
   uint8_t dump_read_cmd;
   bool dump_double_read;
+  uint8_t dump_verify_retries;
   bool dump_ff_opt;
   uint32_t dump_total_bytes;
   uint32_t dump_chunk_bytes;
@@ -106,6 +107,7 @@ static spi_state_t g_spi = {
     .dump_addr_bytes = 3,
     .dump_read_cmd = 0x03,
     .dump_double_read = false,
+    .dump_verify_retries = 0,
     .dump_ff_opt = true,
     .dump_total_bytes = 0,
     .dump_chunk_bytes = 256,
@@ -298,7 +300,7 @@ static void send_spi_state(void) {
            "\"tristate_default\":%s,\"pullups_enabled\":%s,\"hold_present\":%s,\"rst_present\":%s,"
            "\"speed_hz\":%lu,\"idpoll_interval_ms\":%lu,"
            "\"detect_enabled\":%s,\"sniffer_enabled\":%s,\"idpoll_enabled\":%s,\"idpoll_monitor_between\":%s,\"dump_enabled\":%s,"
-           "\"dump\":{\"addr_bytes\":%u,\"read_cmd\":%u,\"double_read\":%s,\"ff_opt\":%s}}",
+           "\"dump\":{\"addr_bytes\":%u,\"read_cmd\":%u,\"double_read\":%s,\"verify_retries\":%u,\"ff_opt\":%s}}",
            (unsigned)SPI_MOSI_PIN, (unsigned)SPI_MISO_PIN, (unsigned)SPI_CS_PIN, (unsigned)SPI_SCK_PIN,
            (unsigned)SPI_RST_PIN, (unsigned)SPI_HOLD_PIN, g_spi.tristate_default ? "true" : "false",
            g_spi.pullups_enabled ? "true" : "false", g_spi.hold_present ? "true" : "false",
@@ -307,7 +309,8 @@ static void send_spi_state(void) {
            g_spi.sniffer_enabled ? "true" : "false", g_spi.idpoll_enabled ? "true" : "false",
            g_spi.idpoll_monitor_between ? "true" : "false",
            g_spi.dump_enabled ? "true" : "false", g_spi.dump_addr_bytes, g_spi.dump_read_cmd,
-           g_spi.dump_double_read ? "true" : "false", g_spi.dump_ff_opt ? "true" : "false");
+           g_spi.dump_double_read ? "true" : "false", g_spi.dump_verify_retries,
+           g_spi.dump_ff_opt ? "true" : "false");
   (void)app_send_text(out);
 }
 
@@ -489,6 +492,7 @@ static void handle_dump_start(const char *json) {
   if (json_extract_u32(json, "chunk_bytes", &v)) g_spi.dump_chunk_bytes = v;
   if (json_extract_u32(json, "speed_hz", &v)) g_spi.speed_hz = clamp_u32(v, SPI_MIN_SPEED_HZ, SPI_MAX_SPEED_HZ);
   if (json_extract_bool(json, "double_read", &b)) g_spi.dump_double_read = b;
+  if (json_extract_u32(json, "verify_retries", &v)) g_spi.dump_verify_retries = (uint8_t)(v > 20u ? 20u : v);
   if (json_extract_bool(json, "ff_opt", &b)) g_spi.dump_ff_opt = b;
 
   if (g_spi.dump_addr_bytes < 2u) g_spi.dump_addr_bytes = 2u;
@@ -749,9 +753,14 @@ void proto_spi_poll(void) {
 
     if (g_spi.dump_double_read) {
       uint32_t vlen = n_send;
+      uint32_t attempt = 0;
+      bool match = false;
       if (vlen > SPI_DUMP_VERIFY_MAX_BYTES) vlen = SPI_DUMP_VERIFY_MAX_BYTES;
-      bool ok2 = read_flash_region(g_spi.dump_sent_bytes, g_spi.dump_read_cmd, g_spi.dump_addr_bytes, g_spi.dump_chk, vlen);
-      bool match = ok2 && (memcmp(g_spi.dump_buf, g_spi.dump_chk, vlen) == 0);
+      for (attempt = 0; attempt <= g_spi.dump_verify_retries; attempt++) {
+        bool ok2 = read_flash_region(g_spi.dump_sent_bytes, g_spi.dump_read_cmd, g_spi.dump_addr_bytes, g_spi.dump_chk, vlen);
+        match = ok2 && (memcmp(g_spi.dump_buf, g_spi.dump_chk, vlen) == 0);
+        if (match) break;
+      }
       if (match) {
         g_spi.dump_verify_ok_count++;
         if ((g_spi.dump_verify_ok_count % 64u) == 0u) {
