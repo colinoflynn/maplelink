@@ -125,8 +125,6 @@
       <div class="grow">
         <label><input id="spitristate" type="checkbox" checked>Tri-state by default</label>
         <label><input id="spipullups" type="checkbox" checked>Pull-ups enabled</label>
-        <label><input id="spirst" type="checkbox">RST pin present</label>
-        <label><input id="spihold" type="checkbox">HOLD pin present</label>
         <button id="spiapplyio">Apply I/O Safety</button>
         <button id="spicfg">Get SPI Config</button>
         <label>Speed <select id="spispeed">
@@ -152,15 +150,15 @@
         </div>
         <div>
           <table class="wmap">
-            <thead><tr><th>Flash Pin</th><th>Signal</th><th>Pico Connection</th></tr></thead>
+            <thead><tr><th>Flash Pin</th><th>Flash Signal</th><th>Pico Connection</th></tr></thead>
             <tbody>
               <tr><td>1</td><td>/CS</td><td class="wpin" id="map-cs">GPIO17</td></tr>
               <tr><td>2</td><td>DO / IO1 (MISO)</td><td class="wpin" id="map-miso">GPIO16</td></tr>
-              <tr><td>3</td><td>/WP / IO2</td><td>Pull-up to 3V3 (or optional GPIO)</td></tr>
+              <tr><td>3</td><td>/WP / IO2</td><td>NC (not connected)</td></tr>
               <tr><td>4</td><td>GND</td><td>Pico GND</td></tr>
               <tr><td>5</td><td>DI / IO0 (MOSI)</td><td class="wpin" id="map-mosi">GPIO19</td></tr>
               <tr><td>6</td><td>SCK / CLK</td><td class="wpin" id="map-clk">GPIO18</td></tr>
-              <tr><td>7</td><td>/HOLD / IO3</td><td class="wpin" id="map-hold">GPIO21 (optional)</td></tr>
+              <tr><td>7</td><td>/HOLD / IO3</td><td>NC (not connected)</td></tr>
               <tr><td>8</td><td>VCC</td><td>3V3</td></tr>
             </tbody>
           </table>
@@ -188,8 +186,6 @@
         <div class="pinrow"><div>MISO</div><div id="pin-miso-state" class="pstate p-na">N/A</div><div id="pin-miso-rate" class="prate">--</div><div class="pbar"><div id="pin-miso-bar" class="pbarfill"></div></div></div>
         <div class="pinrow"><div>CS</div><div id="pin-cs-state" class="pstate p-na">N/A</div><div id="pin-cs-rate" class="prate">--</div><div class="pbar"><div id="pin-cs-bar" class="pbarfill"></div></div></div>
         <div class="pinrow"><div>CLK</div><div id="pin-clk-state" class="pstate p-na">N/A</div><div id="pin-clk-rate" class="prate">--</div><div class="pbar"><div id="pin-clk-bar" class="pbarfill"></div></div></div>
-        <div class="pinrow"><div>RST</div><div id="pin-rst-state" class="pstate p-na">N/A</div><div id="pin-rst-rate" class="prate">--</div><div class="pbar"><div id="pin-rst-bar" class="pbarfill"></div></div></div>
-        <div class="pinrow"><div>HOLD</div><div id="pin-hold-state" class="pstate p-na">N/A</div><div id="pin-hold-rate" class="prate">--</div><div class="pbar"><div id="pin-hold-bar" class="pbarfill"></div></div></div>
       </div>
     </div>
     <div class="group">
@@ -232,11 +228,32 @@
       </div>
     </div>
     <div class="group">
+      <div class="gtitle">Read Status Register</div>
+      <div class="grow">
+        <button id="spistatusread">Read Status Register</button>
+      </div>
+      <div class="idbox">
+        <div class="idgrid">
+          <div class="idlbl">SR1 (0x05)</div><div class="idval" id="spisr1">--</div>
+          <div class="idlbl">SR2 (0x35)</div><div class="idval" id="spisr2">--</div>
+          <div class="idlbl">SR3 (0x15)</div><div class="idval" id="spisr3">--</div>
+          <div class="idlbl">WIP (busy)</div><div class="idval" id="spiwip">--</div>
+          <div class="idlbl">WEL (write enable)</div><div class="idval" id="spiwel">--</div>
+          <div class="idlbl">Block Protect (BP)</div><div class="idval" id="spibp">--</div>
+          <div class="idlbl">TB</div><div class="idval" id="spitb">--</div>
+          <div class="idlbl">SEC</div><div class="idval" id="spisec">--</div>
+          <div class="idlbl">SRP0</div><div class="idval" id="spisrp0">--</div>
+          <div class="idlbl">QE (common decode)</div><div class="idval" id="spiqe">--</div>
+        </div>
+      </div>
+    </div>
+    <div class="group">
       <div class="gtitle">FLASH READ</div>
       <div class="gtitle">Read Configuration</div>
       <div class="grow">
-        <label>Read CMD <input id="spidumpcmd" type="text" value="0x03" style="width:68px"></label>
-        <label>Addr Bytes <select id="spidumpaddr"><option>2</option><option selected>3</option><option>4</option></select></label>
+        <label>Read ADDR CMD <input id="spidumpcmd3" type="text" value="0x03" style="width:68px"></label>
+        <label>Read 4-byte ADDR CMD <input id="spidumpcmd4" type="text" value="0x13" style="width:68px"></label>
+        <label>Addr Bytes <select id="spidumpaddr"><option selected>3</option><option>4</option></select></label>
         <label>Chunk <input id="spidumpchunk" type="number" min="16" step="16" value="256"></label>
         <label>Double-read verify <input id="spidumpdbl" type="checkbox"></label>
         <label>Automatic Retries <input id="spidumpretry" type="number" min="0" max="20" step="1" value="0"></label>
@@ -339,6 +356,7 @@
     const spiIdStartBtn=document.getElementById('spiidstart');
     const spiIdStopBtn=document.getElementById('spiidstop');
     const sfdpReadBtn=document.getElementById('sfdpread');
+    const spiStatusReadBtn=document.getElementById('spistatusread');
     const sfdpLen=document.getElementById('sfdplen');
     const idPollCountEl=document.getElementById('idpollcount');
     const spiDispStartBtn=document.getElementById('spidispstart');
@@ -347,12 +365,11 @@
     const spiDumpStopBtn=document.getElementById('spidumpstop');
     const spiTriState=document.getElementById('spitristate');
     const spiPullups=document.getElementById('spipullups');
-    const spiRst=document.getElementById('spirst');
-    const spiHold=document.getElementById('spihold');
     const spiSpeed=document.getElementById('spispeed');
     const spiIdInt=document.getElementById('spiidint');
     const spiIdMon=document.getElementById('spiidmon');
-    const spiDumpCmd=document.getElementById('spidumpcmd');
+    const spiDumpCmd3=document.getElementById('spidumpcmd3');
+    const spiDumpCmd4=document.getElementById('spidumpcmd4');
     const spiDumpAddr=document.getElementById('spidumpaddr');
     const spiStartAddr=document.getElementById('spistartaddr');
     const spiDispLen=document.getElementById('spidisplen');
@@ -393,18 +410,25 @@
     const sfdpRead4=document.getElementById('sfdpread4');
     const sfdpDens=document.getElementById('sfdpdens');
     const sfdpRaw=document.getElementById('sfdpraw');
+    const spiSr1=document.getElementById('spisr1');
+    const spiSr2=document.getElementById('spisr2');
+    const spiSr3=document.getElementById('spisr3');
+    const spiWip=document.getElementById('spiwip');
+    const spiWel=document.getElementById('spiwel');
+    const spiBp=document.getElementById('spibp');
+    const spiTb=document.getElementById('spitb');
+    const spiSec=document.getElementById('spisec');
+    const spiSrp0=document.getElementById('spisrp0');
+    const spiQe=document.getElementById('spiqe');
     const mapMosi=document.getElementById('map-mosi');
     const mapMiso=document.getElementById('map-miso');
     const mapCs=document.getElementById('map-cs');
     const mapClk=document.getElementById('map-clk');
-    const mapHold=document.getElementById('map-hold');
     const pinUi={
       mosi:{state:document.getElementById('pin-mosi-state'),rate:document.getElementById('pin-mosi-rate'),bar:document.getElementById('pin-mosi-bar')},
       miso:{state:document.getElementById('pin-miso-state'),rate:document.getElementById('pin-miso-rate'),bar:document.getElementById('pin-miso-bar')},
       cs:{state:document.getElementById('pin-cs-state'),rate:document.getElementById('pin-cs-rate'),bar:document.getElementById('pin-cs-bar')},
-      clk:{state:document.getElementById('pin-clk-state'),rate:document.getElementById('pin-clk-rate'),bar:document.getElementById('pin-clk-bar')},
-      rst:{state:document.getElementById('pin-rst-state'),rate:document.getElementById('pin-rst-rate'),bar:document.getElementById('pin-rst-bar')},
-      hold:{state:document.getElementById('pin-hold-state'),rate:document.getElementById('pin-hold-rate'),bar:document.getElementById('pin-hold-bar')}
+      clk:{state:document.getElementById('pin-clk-state'),rate:document.getElementById('pin-clk-rate'),bar:document.getElementById('pin-clk-bar')}
     };
     const st=document.getElementById('st');
     const applyBtn=document.getElementById('apply');
@@ -448,7 +472,7 @@
     const sgr={bold:false,fg:'',bg:''};
     let activeTab='terminal';
     let pinPrevTs=0;
-    let pinPrevTr={mosi:0,miso:0,cs:0,clk:0,rst:0,hold:0};
+    let pinPrevTr={mosi:0,miso:0,cs:0,clk:0};
     let dumpExpectedBytes=0;
     let dumpCapturedBytes=0;
     let dumpRawChunks=[];
@@ -464,6 +488,7 @@
     let dumpLastRateBytes=0;
     let dumpRateEma=0;
     let dumpUiTimer=null;
+    let flashCapacityBytes=0;
     let sniffFrames=0;
     let sniffBytes=0;
     let sniffDropped=0;
@@ -490,6 +515,25 @@
     function le16(b,i){return (b[i]|(b[i+1]<<8))>>>0;}
     function le32(b,i){return (b[i]|(b[i+1]<<8)|(b[i+2]<<16)|(b[i+3]<<24))>>>0;}
     function parseHexByte(s,def){let t=String(s||'').trim().toLowerCase();if(t.startsWith('0x'))t=t.slice(2);if(!/^[0-9a-f]{1,2}$/.test(t))return def;return parseInt(t,16);}
+    function hexByte(v){return '0x'+(v&255).toString(16).toUpperCase().padStart(2,'0');}
+    function setLikelyAddrBytesFromCapacity(bytes){
+      if(!(bytes>0))return;
+      const next=(bytes>0x1000000)?4:3;
+      if(parseNum(spiDumpAddr.value,3)!==next){
+        spiDumpAddr.value=String(next);
+        spiLog('[auto] addr bytes set to '+next+' from capacity '+bytes+' bytes','ok');
+      }
+    }
+    function applyAutoCapacity(bytes,source){
+      const n=Math.floor(parseNum(bytes,0));
+      if(!(n>0))return;
+      if(flashCapacityBytes===n)return;
+      flashCapacityBytes=n;
+      spiDumpLen.value=String(n);
+      updateReadRanges();
+      setLikelyAddrBytesFromCapacity(n);
+      spiLog('[auto] '+source+' capacity '+n+' bytes applied to dump length','ok');
+    }
     function setMap(el,pin,suffix){if(!el)return;el.textContent='GPIO'+pin+(suffix||'');}
     function parseHexBytesLoose(s){const out=[];if(!s)return out;const toks=String(s).trim().split(/[\s,]+/).filter(Boolean);for(const t0 of toks){let t=t0.toLowerCase();if(t.startsWith('0x'))t=t.slice(2);if(!/^[0-9a-f]{1,2}$/.test(t))continue;out.push(parseInt(t,16));}return out;}
     function updateReadRanges(){const start=parseHexU32(spiStartAddr.value,0);const dl=Math.max(1,parseNum(spiDispLen.value,1));const fl=Math.max(1,parseNum(spiDumpLen.value,1));spiDispRange.textContent=hex32(start)+' : '+hex32((start+dl-1)>>>0);spiDumpRange.textContent=hex32(start)+' : '+hex32((start+fl-1)>>>0);}
@@ -596,13 +640,14 @@
       if(bytes.length<3)return null;
       const m=bytes[0],t=bytes[1],c=bytes[2];
       let cap='Unknown';
+      let bytesN=0;
       if(c>=0x10&&c<=0x30){
-        const bytesN=Math.pow(2,c);
+        bytesN=Math.pow(2,c);
         const mib=(bytesN/1048576);
         const mbit=(bytesN*8/1048576);
         cap=(mib>=1?mib.toFixed(mib>=16?0:2)+' MiB / ':'')+mbit.toFixed(mbit>=128?0:2)+' Mbit ('+bytesN+' bytes)';
       }
-      return {mfg:jedecMfgName(m)+' ('+hex2(m)+')',type:hex2(t),cap:cap,summary:jedecMfgName(m)+' '+hex2(t)+' '+hex2(c)};
+      return {mfg:jedecMfgName(m)+' ('+hex2(m)+')',type:hex2(t),cap:cap,summary:jedecMfgName(m)+' '+hex2(t)+' '+hex2(c),bytes:bytesN};
     }
     function setPinUi(pin,level,available,delta,dtMs){
       const u=pinUi[pin];if(!u)return;
@@ -622,27 +667,23 @@
       setPinUi('miso',0,false,0,0);
       setPinUi('cs',0,false,0,0);
       setPinUi('clk',0,false,0,0);
-      setPinUi('rst',0,false,0,0);
-      setPinUi('hold',0,false,0,0);
       pinPrevTs=0;
-      pinPrevTr={mosi:0,miso:0,cs:0,clk:0,rst:0,hold:0};
+      pinPrevTr={mosi:0,miso:0,cs:0,clk:0};
     }
     function handleSpiMessage(m){
       if(m.type==='spi.config'){
         if(typeof m.tristate_default==='boolean')spiTriState.checked=m.tristate_default;
         if(typeof m.pullups_enabled==='boolean')spiPullups.checked=m.pullups_enabled;
-        if(typeof m.hold_present==='boolean')spiHold.checked=m.hold_present;
-        if(typeof m.rst_present==='boolean')spiRst.checked=m.rst_present;
         if(m.speed_hz)spiSpeed.value=String(m.speed_hz);
         if(m.idpoll_interval_ms)spiIdInt.value=String(m.idpoll_interval_ms);
         if(typeof m.idpoll_monitor_between==='boolean')spiIdMon.checked=m.idpoll_monitor_between;
         if(m.dump&&m.dump.addr_bytes)spiDumpAddr.value=String(m.dump.addr_bytes);
-        if(m.dump&&typeof m.dump.read_cmd==='number')spiDumpCmd.value='0x'+m.dump.read_cmd.toString(16);
+        if(m.dump&&typeof m.dump.read_cmd==='number')spiDumpCmd3.value=hexByte(m.dump.read_cmd);
         if(m.dump&&typeof m.dump.double_read==='boolean')spiDumpDbl.checked=m.dump.double_read;
         if(m.dump&&typeof m.dump.verify_retries==='number')spiDumpRetry.value=String(m.dump.verify_retries);
         if(m.dump&&typeof m.dump.ff_opt==='boolean')spiDumpFf.checked=m.dump.ff_opt;
         if(m.dump&&typeof m.dump.start_addr==='number')spiStartAddr.value=hex32(m.dump.start_addr);
-        if(m.pins){if(typeof m.pins.mosi==='number')setMap(mapMosi,m.pins.mosi,'');if(typeof m.pins.miso==='number')setMap(mapMiso,m.pins.miso,'');if(typeof m.pins.cs==='number')setMap(mapCs,m.pins.cs,'');if(typeof m.pins.clk==='number')setMap(mapClk,m.pins.clk,'');if(typeof m.pins.hold==='number')setMap(mapHold,m.pins.hold,' (optional)');}
+        if(m.pins){if(typeof m.pins.mosi==='number')setMap(mapMosi,m.pins.mosi,'');if(typeof m.pins.miso==='number')setMap(mapMiso,m.pins.miso,'');if(typeof m.pins.cs==='number')setMap(mapCs,m.pins.cs,'');if(typeof m.pins.clk==='number')setMap(mapClk,m.pins.clk,'');}
         updateReadRanges();
         spiSt.textContent='config loaded';spiSt.className='ok';spiLog('[spi.config] '+JSON.stringify(m));return true;
       }
@@ -650,14 +691,12 @@
         const tr=m.transitions||{};
         const now=performance.now();
         const dt=Math.max(1,pinPrevTs?now-pinPrevTs:0);
-        const d={mosi:(tr.mosi||0)-pinPrevTr.mosi,miso:(tr.miso||0)-pinPrevTr.miso,cs:(tr.cs||0)-pinPrevTr.cs,clk:(tr.clk||0)-pinPrevTr.clk,rst:(tr.rst||0)-pinPrevTr.rst,hold:(tr.hold||0)-pinPrevTr.hold};
+        const d={mosi:(tr.mosi||0)-pinPrevTr.mosi,miso:(tr.miso||0)-pinPrevTr.miso,cs:(tr.cs||0)-pinPrevTr.cs,clk:(tr.clk||0)-pinPrevTr.clk};
         setPinUi('mosi',!!m.mosi,true,Math.max(0,d.mosi),dt);
         setPinUi('miso',!!m.miso,true,Math.max(0,d.miso),dt);
         setPinUi('cs',!!m.cs,true,Math.max(0,d.cs),dt);
         setPinUi('clk',!!m.clk,true,Math.max(0,d.clk),dt);
-        setPinUi('rst',!!m.rst,m.rst!=null,Math.max(0,d.rst),dt);
-        setPinUi('hold',!!m.hold,m.hold!=null,Math.max(0,d.hold),dt);
-        pinPrevTr={mosi:tr.mosi||0,miso:tr.miso||0,cs:tr.cs||0,clk:tr.clk||0,rst:tr.rst||0,hold:tr.hold||0};
+        pinPrevTr={mosi:tr.mosi||0,miso:tr.miso||0,cs:tr.cs||0,clk:tr.clk||0};
         pinPrevTs=now;
         return true;
       }
@@ -668,7 +707,7 @@
         idRaw.textContent=raw||'--';
         const b=parseIdHex(raw);
         const d=decodeJedec(b);
-        if(d){idMfg.textContent=d.mfg;idType.textContent=d.type;idCap.textContent=d.cap;idSummary.textContent=d.summary;}
+        if(d){idMfg.textContent=d.mfg;idType.textContent=d.type;idCap.textContent=d.cap;idSummary.textContent=d.summary;if(d.bytes>0)applyAutoCapacity(d.bytes,'JEDEC ID');}
         else{idMfg.textContent='--';idType.textContent='--';idCap.textContent='--';idSummary.textContent='unable to decode';}
         spiSt.textContent='id '+(m.id_hex||'');spiSt.className='ok';spiLog('[spi.id] '+JSON.stringify(m));return true;
       }
@@ -705,15 +744,47 @@
         sfdpAddr.textContent=m.addr_mode||'unknown';
         sfdpReadCmd.textContent='0x'+parseNum(m.read_cmd_3b,3).toString(16).toUpperCase().padStart(2,'0');
         sfdpRead4.textContent=(m.read4b_cmd_known?('0x'+parseNum(m.read_cmd_4b,0).toString(16).toUpperCase().padStart(2,'0')):'not reported in SFDP');
+        if(typeof m.read_cmd_3b==='number')spiDumpCmd3.value=hexByte(parseNum(m.read_cmd_3b,0x03));
+        if(m.read4b_cmd_known&&typeof m.read_cmd_4b==='number')spiDumpCmd4.value=hexByte(parseNum(m.read_cmd_4b,0x13));
         if(m.density_ok){
           const bits=parseNum(m.density_bits,0);
           const bytes=parseNum(m.density_bytes,0);
           const mib=(bytes/1048576).toFixed(bytes>=16*1048576?0:2);
           sfdpDens.textContent=bits+' bits ('+bytes+' bytes, '+mib+' MiB)';
+          applyAutoCapacity(bytes,'SFDP');
+          if((m.addr_mode||'')==='4-byte only')spiDumpAddr.value='4';
+          else if((m.addr_mode||'')==='3-byte only')spiDumpAddr.value='3';
         }else{
           sfdpDens.textContent='unknown (raw 0x'+parseNum(m.density_raw,0).toString(16)+')';
         }
         sfdpRaw.textContent=m.raw_hex||'--';
+        return true;
+      }
+      if(m.type==='spi.status.result'){
+        if(!m.ok){
+          spiSr1.textContent='read failed';
+          spiSr2.textContent='--';
+          spiSr3.textContent='--';
+          spiWip.textContent='--';
+          spiWel.textContent='--';
+          spiBp.textContent='--';
+          spiTb.textContent='--';
+          spiSec.textContent='--';
+          spiSrp0.textContent='--';
+          spiQe.textContent='--';
+          return true;
+        }
+        const sr1=parseNum(m.sr1,0), sr2=parseNum(m.sr2,0), sr3=parseNum(m.sr3,0);
+        spiSr1.textContent=hexByte(sr1);
+        spiSr2.textContent=(m.sr2_ok?hexByte(sr2):'n/a');
+        spiSr3.textContent=(m.sr3_ok?hexByte(sr3):'n/a');
+        spiWip.textContent=m.wip?'1 (busy)':'0 (ready)';
+        spiWel.textContent=m.wel?'1 (enabled)':'0 (disabled)';
+        spiBp.textContent='0b'+parseNum(m.bp,0).toString(2).padStart(3,'0');
+        spiTb.textContent=m.tb?'1':'0';
+        spiSec.textContent=m.sec?'1':'0';
+        spiSrp0.textContent=m.srp0?'1':'0';
+        spiQe.textContent=m.qe?'1':'0/unknown';
         return true;
       }
       if(m.type==='spi.sniffer.frame'){appendSnifferFrame(m);return true;}
@@ -801,15 +872,16 @@
     dbgClear.onclick=()=>{dbgOut.textContent='';};
     bootselBtn.onclick=()=>{if(!confirm('Reboot Pico into BOOTSEL mode now? This will disconnect the web UI.'))return;send({type:'system.bootsel'});};
     spiCfgBtn.onclick=()=>spiSend('spi.get_config');
-    spiApplyIoBtn.onclick=()=>spiSend('spi.set_io',{tristate_default:spiTriState.checked,pullups_enabled:spiPullups.checked,hold_present:spiHold.checked,rst_present:spiRst.checked});
+    spiApplyIoBtn.onclick=()=>spiSend('spi.set_io',{tristate_default:spiTriState.checked,pullups_enabled:spiPullups.checked});
     spiSetSpeedBtn.onclick=()=>spiSend('spi.set_speed',{speed_hz:parseNum(spiSpeed.value,1000000),idpoll_interval_ms:parseNum(spiIdInt.value,250)});
     spiDetectStartBtn.onclick=()=>spiSend('spi.detect.start');
     spiDetectStopBtn.onclick=()=>{spiSend('spi.detect.stop');resetPinUi();};
     spiSniffStartBtn.onclick=()=>{resetSnifferUi();spiSend('spi.sniffer.start');};
     spiSniffStopBtn.onclick=()=>spiSend('spi.sniffer.stop');
     spiIdStartBtn.onclick=()=>{idPollCount=0;idPollCountEl.textContent='0';idWindow.textContent='--';idWindow.className='idval';idWinTr.textContent='--';spiSend('spi.idpoll.start',{interval_ms:parseNum(spiIdInt.value,250),speed_hz:parseNum(spiSpeed.value,1000000),monitor_between:spiIdMon.checked});};
-    spiIdStopBtn.onclick=()=>{spiSend('spi.idpoll.stop');idWindow.textContent='--';idWindow.className='idval';idWinTr.textContent='--';};
+    spiIdStopBtn.onclick=()=>{spiSend('spi.idpoll.stop');idWindow.textContent='--';idWindow.className='idval';idWinTr.textContent='--';resetPinUi();};
     sfdpReadBtn.onclick=()=>{spiSend('spi.sfdp.read',{length:parseNum(sfdpLen.value,256)});};
+    spiStatusReadBtn.onclick=()=>{spiSend('spi.status.read');};
     spiDumpRows.addEventListener('input',renderDumpRecent);
     [spiStartAddr,spiDispLen,spiDumpLen].forEach(el=>{el.addEventListener('input',updateReadRanges);el.addEventListener('change',updateReadRanges);});
     function startRead(toFile){
@@ -824,7 +896,11 @@
       spiDump.textContent=(toFile?'dump':'display')+': starting...';
       spiDumpRate.textContent='Rate: measuring...';
       renderDumpRecent();updateDumpProgress();
-      spiSend(toFile?'spi.dump.start':'spi.display.start',{read_cmd:parseHexByte(spiDumpCmd.value,0x03),addr_bytes:parseNum(spiDumpAddr.value,3),start_addr:startAddr,length_bytes:dumpExpectedBytes,chunk_bytes:parseNum(spiDumpChunk.value,256),double_read:spiDumpDbl.checked,verify_retries:parseNum(spiDumpRetry.value,0),ff_opt:spiDumpFf.checked,speed_hz:parseNum(spiSpeed.value,1000000)});
+      const addrBytes=(parseNum(spiDumpAddr.value,3)>=4)?4:3;
+      const cmd3=parseHexByte(spiDumpCmd3.value,0x03);
+      const cmd4=parseHexByte(spiDumpCmd4.value,cmd3);
+      const readCmd=(addrBytes>=4)?cmd4:cmd3;
+      spiSend(toFile?'spi.dump.start':'spi.display.start',{read_cmd:readCmd,addr_bytes:addrBytes,start_addr:startAddr,length_bytes:dumpExpectedBytes,chunk_bytes:parseNum(spiDumpChunk.value,256),double_read:spiDumpDbl.checked,verify_retries:parseNum(spiDumpRetry.value,0),ff_opt:spiDumpFf.checked,speed_hz:parseNum(spiSpeed.value,1000000)});
     }
     spiDispStartBtn.onclick=()=>startRead(false);
     spiDispStopBtn.onclick=()=>{spiSt.textContent='stopping display...';spiSt.className='dim';spiDump.textContent='display: stopping...';spiSend('spi.display.stop');};

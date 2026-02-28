@@ -18,8 +18,6 @@
 #define SPI_CS_PIN 17
 #define SPI_SCK_PIN 18
 #define SPI_MOSI_PIN 19
-#define SPI_RST_PIN 20
-#define SPI_HOLD_PIN 21
 
 #define SPI_MIN_SPEED_HZ 10000u
 #define SPI_MAX_SPEED_HZ 16000000u
@@ -44,8 +42,6 @@ typedef struct {
   bool idpoll_enabled;
   bool idpoll_monitor_between;
   bool dump_enabled;
-  bool hold_present;
-  bool rst_present;
   uint32_t speed_hz;
   uint32_t idpoll_interval_ms;
   uint8_t dump_addr_bytes;
@@ -67,20 +63,14 @@ typedef struct {
   uint32_t tr_miso;
   uint32_t tr_cs;
   uint32_t tr_clk;
-  uint32_t tr_rst;
-  uint32_t tr_hold;
   uint32_t base_tr_mosi;
   uint32_t base_tr_miso;
   uint32_t base_tr_cs;
   uint32_t base_tr_clk;
-  uint32_t base_tr_rst;
-  uint32_t base_tr_hold;
   uint8_t lv_mosi;
   uint8_t lv_miso;
   uint8_t lv_cs;
   uint8_t lv_clk;
-  uint8_t lv_rst;
-  uint8_t lv_hold;
   bool spi_active;
   bool sniff_frame_active;
   uint8_t sniff_cur_tx;
@@ -104,8 +94,6 @@ static spi_state_t g_spi = {
     .idpoll_enabled = false,
     .idpoll_monitor_between = false,
     .dump_enabled = false,
-    .hold_present = false,
-    .rst_present = false,
     .speed_hz = 1000000,
     .idpoll_interval_ms = 250,
     .dump_addr_bytes = 3,
@@ -167,25 +155,12 @@ static void pin_input(uint pin) {
   if (g_spi.pullups_enabled) gpio_pull_up(pin);
 }
 
-static void pin_input_opt(uint pin, bool present) {
-  gpio_init(pin);
-  gpio_set_dir(pin, GPIO_IN);
-  if (!present) {
-    gpio_disable_pulls(pin);
-    return;
-  }
-  gpio_disable_pulls(pin);
-  if (g_spi.pullups_enabled) gpio_pull_up(pin);
-}
-
 static void spi_apply_safe_io(void) {
   // All lines as inputs unless an operation takes ownership.
   pin_input(SPI_MOSI_PIN);
   pin_input(SPI_MISO_PIN);
   pin_input(SPI_CS_PIN);
   pin_input(SPI_SCK_PIN);
-  pin_input_opt(SPI_RST_PIN, g_spi.rst_present);
-  pin_input_opt(SPI_HOLD_PIN, g_spi.hold_present);
 }
 
 static void spi_activate_master(void) {
@@ -318,6 +293,57 @@ static bool read_sfdp_region(uint32_t addr, uint8_t *dst, uint32_t len) {
   }
   gpio_put(SPI_CS_PIN, 1);
   return true;
+}
+
+static void handle_status_read(const char *json) {
+  (void)json;
+  uint8_t tx1[2] = {0x05u, 0x00u};
+  uint8_t rx1[2] = {0};
+  uint8_t tx2[2] = {0x35u, 0x00u};
+  uint8_t rx2[2] = {0};
+  uint8_t tx3[2] = {0x15u, 0x00u};
+  uint8_t rx3[2] = {0};
+  bool ok1;
+  bool ok2;
+  bool ok3;
+  uint8_t sr1;
+  uint8_t sr2;
+  uint8_t sr3;
+  char out[480];
+
+  if (g_spi.dump_enabled || g_spi.sniffer_enabled) {
+    (void)app_send_text("{\"type\":\"error\",\"code\":\"SPI_BUSY\",\"msg\":\"status read blocked while dump/sniffer active\"}");
+    return;
+  }
+
+  ok1 = spi_xfer(tx1, rx1, sizeof(tx1));
+  ok2 = spi_xfer(tx2, rx2, sizeof(tx2));
+  ok3 = spi_xfer(tx3, rx3, sizeof(tx3));
+  sr1 = rx1[1];
+  sr2 = rx2[1];
+  sr3 = rx3[1];
+
+  if (!ok1) {
+    (void)app_send_text("{\"type\":\"spi.status.result\",\"ok\":false,\"msg\":\"read failed\"}");
+    if (g_spi.tristate_default) spi_release_master();
+    return;
+  }
+
+  snprintf(out, sizeof(out),
+           "{\"type\":\"spi.status.result\",\"ok\":true,"
+           "\"sr1\":%u,\"sr2\":%u,\"sr3\":%u,\"sr2_ok\":%s,\"sr3_ok\":%s,"
+           "\"wip\":%s,\"wel\":%s,\"bp\":%u,\"tb\":%s,\"sec\":%s,\"srp0\":%s,\"qe\":%s}",
+           (unsigned)sr1, (unsigned)sr2, (unsigned)sr3,
+           ok2 ? "true" : "false", ok3 ? "true" : "false",
+           (sr1 & 0x01u) ? "true" : "false",
+           (sr1 & 0x02u) ? "true" : "false",
+           (unsigned)((sr1 >> 2u) & 0x07u),
+           (sr1 & 0x20u) ? "true" : "false",
+           (sr1 & 0x40u) ? "true" : "false",
+           (sr1 & 0x80u) ? "true" : "false",
+           (sr2 & 0x02u) ? "true" : "false");
+  (void)app_send_text(out);
+  if (g_spi.tristate_default) spi_release_master();
 }
 
 static uint32_t rd_le32(const uint8_t *p) {
@@ -459,16 +485,15 @@ static void send_spi_state(void) {
   char out[768];
   snprintf(out, sizeof(out),
            "{\"type\":\"spi.config\",\"port\":\"" SPI_PORT_NAME "\",\"status\":\"hw\","
-           "\"pins\":{\"mosi\":%u,\"miso\":%u,\"cs\":%u,\"clk\":%u,\"rst\":%u,\"hold\":%u},"
-           "\"tristate_default\":%s,\"pullups_enabled\":%s,\"hold_present\":%s,\"rst_present\":%s,"
+           "\"pins\":{\"mosi\":%u,\"miso\":%u,\"cs\":%u,\"clk\":%u},"
+           "\"tristate_default\":%s,\"pullups_enabled\":%s,"
            "\"speed_hz\":%lu,\"idpoll_interval_ms\":%lu,"
            "\"detect_enabled\":%s,\"sniffer_enabled\":%s,\"idpoll_enabled\":%s,\"idpoll_monitor_between\":%s,\"dump_enabled\":%s,"
            "\"dump\":{\"addr_bytes\":%u,\"read_cmd\":%u,\"double_read\":%s,\"verify_retries\":%u,"
            "\"ff_opt\":%s,\"start_addr\":%lu,\"to_file\":%s}}",
            (unsigned)SPI_MOSI_PIN, (unsigned)SPI_MISO_PIN, (unsigned)SPI_CS_PIN, (unsigned)SPI_SCK_PIN,
-           (unsigned)SPI_RST_PIN, (unsigned)SPI_HOLD_PIN, g_spi.tristate_default ? "true" : "false",
-           g_spi.pullups_enabled ? "true" : "false", g_spi.hold_present ? "true" : "false",
-           g_spi.rst_present ? "true" : "false", (unsigned long)g_spi.speed_hz,
+           g_spi.tristate_default ? "true" : "false", g_spi.pullups_enabled ? "true" : "false",
+           (unsigned long)g_spi.speed_hz,
            (unsigned long)g_spi.idpoll_interval_ms, g_spi.detect_enabled ? "true" : "false",
            g_spi.sniffer_enabled ? "true" : "false", g_spi.idpoll_enabled ? "true" : "false",
            g_spi.idpoll_monitor_between ? "true" : "false",
@@ -508,30 +533,16 @@ static void poll_pin_levels_and_transitions(void) {
   v = (uint8_t)gpio_get(SPI_SCK_PIN);
   if (v != g_spi.lv_clk) g_spi.tr_clk++;
   g_spi.lv_clk = v;
-
-  if (g_spi.rst_present) {
-    v = (uint8_t)gpio_get(SPI_RST_PIN);
-    if (v != g_spi.lv_rst) g_spi.tr_rst++;
-    g_spi.lv_rst = v;
-  }
-
-  if (g_spi.hold_present) {
-    v = (uint8_t)gpio_get(SPI_HOLD_PIN);
-    if (v != g_spi.lv_hold) g_spi.tr_hold++;
-    g_spi.lv_hold = v;
-  }
 }
 
 static void send_pin_snapshot(void) {
   char out[384];
   snprintf(out, sizeof(out),
-           "{\"type\":\"spi.pins\",\"mosi\":%u,\"miso\":%u,\"cs\":%u,\"clk\":%u,\"rst\":%s,\"hold\":%s,"
-           "\"transitions\":{\"mosi\":%lu,\"miso\":%lu,\"cs\":%lu,\"clk\":%lu,\"rst\":%lu,\"hold\":%lu}}",
+           "{\"type\":\"spi.pins\",\"mosi\":%u,\"miso\":%u,\"cs\":%u,\"clk\":%u,"
+           "\"transitions\":{\"mosi\":%lu,\"miso\":%lu,\"cs\":%lu,\"clk\":%lu}}",
            (unsigned)g_spi.lv_mosi, (unsigned)g_spi.lv_miso, (unsigned)g_spi.lv_cs, (unsigned)g_spi.lv_clk,
-           g_spi.rst_present ? (g_spi.lv_rst ? "1" : "0") : "null",
-           g_spi.hold_present ? (g_spi.lv_hold ? "1" : "0") : "null",
            (unsigned long)g_spi.tr_mosi, (unsigned long)g_spi.tr_miso, (unsigned long)g_spi.tr_cs,
-           (unsigned long)g_spi.tr_clk, (unsigned long)g_spi.tr_rst, (unsigned long)g_spi.tr_hold);
+           (unsigned long)g_spi.tr_clk);
   (void)app_send_text(out);
 }
 
@@ -540,8 +551,6 @@ static void snapshot_pin_levels_no_count(void) {
   g_spi.lv_miso = (uint8_t)gpio_get(SPI_MISO_PIN);
   g_spi.lv_cs = (uint8_t)gpio_get(SPI_CS_PIN);
   g_spi.lv_clk = (uint8_t)gpio_get(SPI_SCK_PIN);
-  if (g_spi.rst_present) g_spi.lv_rst = (uint8_t)gpio_get(SPI_RST_PIN);
-  if (g_spi.hold_present) g_spi.lv_hold = (uint8_t)gpio_get(SPI_HOLD_PIN);
 }
 
 static void set_idpoll_baseline(void) {
@@ -549,8 +558,6 @@ static void set_idpoll_baseline(void) {
   g_spi.base_tr_miso = g_spi.tr_miso;
   g_spi.base_tr_cs = g_spi.tr_cs;
   g_spi.base_tr_clk = g_spi.tr_clk;
-  g_spi.base_tr_rst = g_spi.tr_rst;
-  g_spi.base_tr_hold = g_spi.tr_hold;
 }
 
 static void sniff_emit_frame(void) {
@@ -628,8 +635,6 @@ static void handle_set_io(const char *json) {
   bool b;
   if (json_extract_bool(json, "tristate_default", &b)) g_spi.tristate_default = b;
   if (json_extract_bool(json, "pullups_enabled", &b)) g_spi.pullups_enabled = b;
-  if (json_extract_bool(json, "hold_present", &b)) g_spi.hold_present = b;
-  if (json_extract_bool(json, "rst_present", &b)) g_spi.rst_present = b;
 
   if (g_spi.tristate_default) spi_apply_safe_io();
   spi_dbg(2, "set_io applied");
@@ -698,8 +703,6 @@ void proto_spi_init(void) {
   g_spi.lv_miso = 0;
   g_spi.lv_cs = 1;
   g_spi.lv_clk = 0;
-  g_spi.lv_rst = 1;
-  g_spi.lv_hold = 1;
   g_spi.sniff_prev_clk = 0;
   spi_apply_safe_io();
 }
@@ -793,6 +796,7 @@ bool proto_spi_handle_text(const char *type, const char *json) {
 
   if (strcmp(type, "spi.idpoll.stop") == 0) {
     g_spi.idpoll_enabled = false;
+    g_spi.detect_enabled = false;
     spi_release_master();
     spi_dbg(1, "idpoll stopped");
     send_spi_status("idpoll", "disabled");
@@ -832,6 +836,10 @@ bool proto_spi_handle_text(const char *type, const char *json) {
     handle_sfdp_read(json);
     return true;
   }
+  if (strcmp(type, "spi.status.read") == 0) {
+    handle_status_read(json);
+    return true;
+  }
 
   return app_send_text("{\"type\":\"error\",\"code\":\"SPI_UNSUPPORTED\",\"msg\":\"spi command not implemented\"}");
 }
@@ -862,19 +870,17 @@ void proto_spi_poll(void) {
     uint32_t d_miso = g_spi.tr_miso - g_spi.base_tr_miso;
     uint32_t d_cs = g_spi.tr_cs - g_spi.base_tr_cs;
     uint32_t d_clk = g_spi.tr_clk - g_spi.base_tr_clk;
-    uint32_t d_rst = g_spi.tr_rst - g_spi.base_tr_rst;
-    uint32_t d_hold = g_spi.tr_hold - g_spi.base_tr_hold;
-    uint32_t total = d_mosi + d_miso + d_cs + d_clk + d_rst + d_hold;
+    uint32_t total = d_mosi + d_miso + d_cs + d_clk;
     g_spi.last_idpoll_ms = now;
 
     if (g_spi.idpoll_monitor_between) {
       char win[320];
       snprintf(win, sizeof(win),
                "{\"type\":\"spi.idpoll.window\",\"between_ms\":%lu,\"clear\":%s,"
-               "\"transitions\":{\"mosi\":%lu,\"miso\":%lu,\"cs\":%lu,\"clk\":%lu,\"rst\":%lu,\"hold\":%lu},\"total\":%lu}",
+               "\"transitions\":{\"mosi\":%lu,\"miso\":%lu,\"cs\":%lu,\"clk\":%lu},\"total\":%lu}",
                (unsigned long)g_spi.idpoll_interval_ms, total == 0 ? "true" : "false",
                (unsigned long)d_mosi, (unsigned long)d_miso, (unsigned long)d_cs,
-               (unsigned long)d_clk, (unsigned long)d_rst, (unsigned long)d_hold, (unsigned long)total);
+               (unsigned long)d_clk, (unsigned long)total);
       (void)app_send_text(win);
     }
 
