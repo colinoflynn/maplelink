@@ -7,6 +7,8 @@ project(picowebserverspi)
 find_package(Python3 COMPONENTS Interpreter REQUIRED)
 
 set(picotool_DIR "C:/devtools/picotool")
+
+
 set(BROWSERIO_XTERM_SOURCE "CDN" CACHE STRING "xterm.js source: CDN or LOCAL")
 set_property(CACHE BROWSERIO_XTERM_SOURCE PROPERTY STRINGS CDN LOCAL)
 

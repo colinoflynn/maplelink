@@ -6,6 +6,7 @@
 #include <string.h>
 
 #include "app_transport.h"
+#include "hardware/gpio.h"
 #include "hardware/uart.h"
 #include "pico/stdlib.h"
 
@@ -33,6 +34,15 @@ static uart_cfg_t g_cfg = {
 };
 
 static bool g_uart_ready;
+static bool g_rxmon_enabled;
+static uint32_t g_rxmon_last_report_ms;
+static uint32_t g_rxmon_edges_window;
+static uint32_t g_rxmon_rise_window;
+static uint32_t g_rxmon_fall_window;
+static uint8_t g_rxmon_prev_level = 1;
+static bool g_rxmon_have_prev_sample;
+
+static void uart_dbg(uint8_t level, const char *msg) { (void)app_debug_log(level, "uart", msg); }
 
 static bool extract_u32(const char *json, const char *key, uint32_t *out) {
   char pattern[32];
@@ -69,6 +79,24 @@ static bool extract_str(const char *json, const char *key, char *out, size_t out
   return true;
 }
 
+static bool extract_bool(const char *json, const char *key, bool *out) {
+  char pattern[32];
+  const char *p;
+  snprintf(pattern, sizeof(pattern), "\"%s\":", key);
+  p = strstr(json, pattern);
+  if (!p) return false;
+  p += strlen(pattern);
+  if (strncmp(p, "true", 4) == 0) {
+    *out = true;
+    return true;
+  }
+  if (strncmp(p, "false", 5) == 0) {
+    *out = false;
+    return true;
+  }
+  return false;
+}
+
 static bool apply_uart_cfg(const uart_cfg_t *cfg) {
   uart_parity_t parity_mode = UART_PARITY_NONE;
 
@@ -94,8 +122,9 @@ static void send_cfg(void) {
   char out[192];
   snprintf(out, sizeof(out),
            "{\"type\":\"uart.config\",\"port\":\"uart0\",\"baud\":%lu,\"data_bits\":%u,"
-           "\"parity\":\"%s\",\"stop_bits\":%u,\"flow\":\"%s\"}",
-           (unsigned long)g_cfg.baud, g_cfg.data_bits, g_cfg.parity, g_cfg.stop_bits, g_cfg.flow);
+           "\"parity\":\"%s\",\"stop_bits\":%u,\"flow\":\"%s\",\"tx_pin\":%u,\"rx_pin\":%u}",
+           (unsigned long)g_cfg.baud, g_cfg.data_bits, g_cfg.parity, g_cfg.stop_bits, g_cfg.flow,
+           (unsigned)SERIAL_TX_PIN, (unsigned)SERIAL_RX_PIN);
   (void)app_send_text(out);
 }
 
@@ -109,6 +138,54 @@ void proto_uart_on_client_open(ws_conn_t *conn) {
 
 void proto_uart_on_client_close(ws_conn_t *conn) {
   (void)conn;
+}
+
+static void rxmon_reset_window(void) {
+  g_rxmon_edges_window = 0;
+  g_rxmon_rise_window = 0;
+  g_rxmon_fall_window = 0;
+}
+
+static void rxmon_send_status(void) {
+  char out[384];
+  char dbg[192];
+  bool toggling = (g_rxmon_edges_window > 0u);
+
+  snprintf(out, sizeof(out),
+           "{\"type\":\"uart.rxmon\",\"enabled\":%s,\"level\":%u,\"edges\":%lu,"
+           "\"sample_hz\":%lu,\"rises\":%lu,\"falls\":%lu,"
+           "\"min_low_ns\":%lu,\"min_high_ns\":%lu,\"min_pulse_ns\":%lu,"
+           "\"est_baud\":%lu,\"est_baud_sticky\":%lu,\"min_pulse_ns_sticky\":%lu,"
+           "\"toggling\":%s}",
+           g_rxmon_enabled ? "true" : "false", (unsigned)g_rxmon_prev_level,
+           (unsigned long)g_rxmon_edges_window, 0ul,
+           (unsigned long)g_rxmon_rise_window, (unsigned long)g_rxmon_fall_window,
+           0ul, 0ul, 0ul, 0ul, 0ul, 0ul, toggling ? "true" : "false");
+  (void)app_send_text(out);
+
+  if (app_debug_level() >= 3u) {
+    snprintf(dbg, sizeof(dbg), "rxmon window: level=%u toggling=%s edges=%lu rises=%lu falls=%lu",
+             (unsigned)g_rxmon_prev_level, toggling ? "true" : "false",
+             (unsigned long)g_rxmon_edges_window, (unsigned long)g_rxmon_rise_window,
+             (unsigned long)g_rxmon_fall_window);
+    uart_dbg(3, dbg);
+  }
+}
+
+static void handle_rxmon_set(const char *json, bool enable_default) {
+  bool en = enable_default;
+  uint32_t ignored_sample_hz = 0;
+  (void)extract_bool(json, "enable", &en);
+  (void)extract_u32(json, "sample_hz", &ignored_sample_hz);
+  g_rxmon_enabled = en;
+  g_rxmon_last_report_ms = to_ms_since_boot(get_absolute_time());
+  rxmon_reset_window();
+  g_rxmon_have_prev_sample = false;
+  if (g_rxmon_enabled) {
+    g_rxmon_prev_level = (uint8_t)gpio_get(SERIAL_RX_PIN);
+    g_rxmon_have_prev_sample = true;
+  }
+  rxmon_send_status();
 }
 
 static void handle_term_write(const char *json) {
@@ -162,6 +239,18 @@ bool proto_uart_handle_text(const char *type, const char *json) {
     handle_term_write(json);
     return true;
   }
+  if (strcmp(type, "uart.rxmon.start") == 0) {
+    handle_rxmon_set(json, true);
+    return true;
+  }
+  if (strcmp(type, "uart.rxmon.stop") == 0) {
+    handle_rxmon_set(json, false);
+    return true;
+  }
+  if (strcmp(type, "uart.rxmon.get") == 0) {
+    rxmon_send_status();
+    return true;
+  }
 
   return false;
 }
@@ -173,6 +262,25 @@ bool proto_uart_handle_binary(const uint8_t *data, uint16_t len) {
 }
 
 void proto_uart_poll(void) {
+  if (g_rxmon_enabled) {
+    uint32_t now_ms = to_ms_since_boot(get_absolute_time());
+    uint8_t level = (uint8_t)gpio_get(SERIAL_RX_PIN);
+    if (!g_rxmon_have_prev_sample) {
+      g_rxmon_prev_level = level;
+      g_rxmon_have_prev_sample = true;
+    } else if (level != g_rxmon_prev_level) {
+      if (g_rxmon_prev_level == 0u) g_rxmon_rise_window++;
+      else g_rxmon_fall_window++;
+      g_rxmon_edges_window++;
+      g_rxmon_prev_level = level;
+    }
+    if ((now_ms - g_rxmon_last_report_ms) >= 250u) {
+      g_rxmon_last_report_ms = now_ms;
+      rxmon_send_status();
+      rxmon_reset_window();
+    }
+  }
+
   if (!app_current_client() || !g_uart_ready) return;
   if (!uart_is_readable(SERIAL_UART_ID)) return;
 

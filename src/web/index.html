@@ -102,6 +102,12 @@
     <span id="dirty">settings changed - press Apply</span>
     <span id="st">connecting...</span>
   </div>
+  <div class="bar">
+    <span id="uartpins" class="dim">UART0 pins: TX=GPIO0, RX=GPIO1</span>
+    <label><input id="rxmonen" type="checkbox">RX activity monitor</label>
+    <span id="rxmonstat" class="dim">rxmon off</span>
+    <button id="rxmonreset">Reset Edges</button>
+  </div>
 
   <div class="bar">
     <input id="txstr" type="text" placeholder="Paste plain text here, then Send Text" style="width:min(520px,95vw)">
@@ -464,6 +470,10 @@
     const st=document.getElementById('st');
     const applyBtn=document.getElementById('apply');
     const dirty=document.getElementById('dirty');
+    const uartPins=document.getElementById('uartpins');
+    const rxMonEn=document.getElementById('rxmonen');
+    const rxMonStat=document.getElementById('rxmonstat');
+    const rxMonReset=document.getElementById('rxmonreset');
     const sendMode=document.getElementById('sendmode');
     const enterMode=document.getElementById('enter');
     const decodeMode=document.getElementById('decode');
@@ -520,6 +530,8 @@
     let dumpRateEma=0;
     let dumpUiTimer=null;
     let flashCapacityBytes=0;
+    let rxMonEdgesTotal=0;
+    let rxMonLastBaud=0;
     let sniffFrames=0;
     let sniffBytes=0;
     let sniffDropped=0;
@@ -540,6 +552,7 @@
     function spiLog(s,cls){appendLogLine(spiOut,MAX_SPI_LOG_LINES,s,cls);}
     function dbgLog(s,cls){appendLogLine(dbgOut,MAX_DBG_LOG_LINES,s,cls);}
     function rawLog(s,cls){appendLogLine(rawOut,MAX_SPI_LOG_LINES,s,cls);}
+    function fmtNs(ns){const n=parseNum(ns,0);if(!n)return'--';if(n<1000)return n+' ns';const us=n/1000;return us.toFixed(us>=100?1:2)+' us';}
     function buildRawRows(){
       for(let i=0;i<10;i++){
         const row=document.createElement('div');
@@ -560,6 +573,16 @@
       });
     }
     function spiSend(type,obj){const m=Object.assign({type:type,port:'spi0'},obj||{});send(m);}
+    function setRxMonUi(m){
+      if(typeof m.enabled==='boolean')rxMonEn.checked=m.enabled;
+      const edges=parseNum(m.edges,0);
+      if(edges>0)rxMonEdgesTotal+=edges;
+      const modeTxt=m.enabled?'on':'off';
+      const levelTxt=(parseNum(m.level,1)===0)?'LOW':'HIGH';
+      const toggling=(!!m.toggling)||(edges>0);
+      rxMonStat.textContent='rxmon '+modeTxt+' | level '+levelTxt+' | toggling '+(toggling?'yes':'no')+' | total edges '+rxMonEdgesTotal+' | last '+edges;
+      rxMonStat.className=(m.enabled&&edges>0)?'ok':'dim';
+    }
     function parseNum(s,def){const n=parseInt(String(s||''),10);return Number.isFinite(n)?n:def;}
     function parseHexU32(s,def){let t=String(s||'').trim().toLowerCase();if(t.startsWith('0x'))t=t.slice(2);if(!/^[0-9a-f]{1,8}$/.test(t))return def>>>0;return (parseInt(t,16)>>>0);}
     function hex32(v){return '0x'+((v>>>0).toString(16).toUpperCase().padStart(8,'0'));}
@@ -905,9 +928,9 @@
     async function ensureXterm(){if(xterm||xtermLoading||xtermFailed)return;xtermLoading=true;try{loadCss('__XTERM_CSS_URL__');if(!window.Terminal){try{await loadScript('__XTERM_JS_PRIMARY__');}catch(_){await loadScript('__XTERM_JS_FALLBACK__');}}xterm=new window.Terminal({cursorBlink:true,convertEol:false,scrollback:xtermScrollback(),theme:{background:'#0b0f14',foreground:'#e6edf3'}});xterm.open(termVt);xterm.onData(d=>sendBinary(enc.encode(d)));xterm.write('\r\n[VT100 mode active]\r\n');}catch(_){xtermFailed=true;appendTerm('\n[error failed to load xterm.js, check internet access]\n','err');decodeMode.value='ansi';shell.classList.remove('vt');}finally{xtermLoading=false;}}
     function syncDecodeMode(){if(decodeMode.value==='vt100'){shell.classList.add('vt');ensureXterm();}else{shell.classList.remove('vt');}}
 
-    ws.onopen=()=>{st.textContent='connected';st.className='ok';send({type:'hello'});send({type:'uart.get_config',port:'uart0'});spiSend('spi.get_config');send({type:'system.get_debug'});term.focus();};
+    ws.onopen=()=>{st.textContent='connected';st.className='ok';send({type:'hello'});send({type:'uart.get_config',port:'uart0'});send({type:'uart.rxmon.get'});spiSend('spi.get_config');send({type:'system.get_debug'});term.focus();};
     ws.onclose=()=>{st.textContent='disconnected';st.className='err';};
-    ws.onmessage=(e)=>{if(typeof e.data==='string'){try{const m=JSON.parse(e.data);if(m.type==='hello'){aboutFw.textContent=m.fw||'--';aboutBuild.textContent=((m.build_date||'')+' '+(m.build_time||'')).trim()||'--';}else if(m.type==='uart.config'){appendTerm('\n[config '+JSON.stringify(m)+']\n','ok');}else if(m.type==='system.bootsel'){appendTerm('\n[system entering USB boot mode]\n','ok');spiLog('[system] entering USB boot mode','ok');dbgLog('[system] entering USB boot mode','ok');}else if(m.type==='system.debug'){if(typeof m.level==='number'){dbgLevel.value=String(m.level);dbgStatus.textContent='level '+m.level;}dbgLog('[debug cfg] '+JSON.stringify(m),'dim');}else if(m.type==='debug.log'){dbgLog('L'+(m.level||0)+' '+(m.scope||'sys')+': '+(m.msg||''));}else if(m.type==='error'){appendTerm('\n[error '+(m.msg||'unknown')+']\n','err');dbgLog('[error] '+(m.code||'')+' '+(m.msg||'unknown'),'err');if((m.code||'').startsWith('SPI_')){spiLog('[spi.error] '+(m.msg||m.code),'err');spiDump.textContent='dump: error ('+(m.msg||m.code)+')';}}else if(m.type&&m.type.startsWith('spi.')){if(!handleSpiMessage(m))spiLog('[spi] '+JSON.stringify(m));}else{appendTerm('\n['+e.data+']\n');}}catch(_){appendTerm(e.data);}}else{const b=new Uint8Array(e.data);if(b.length>=2&&b[0]===WS_BIN_MAGIC){const ch=b[1];if(ch===WS_CH_UART){queueRx(b.slice(2));}else if(ch===WS_CH_SPI_DUMP_DATA&&b.length>=8){const off=le32(b,2);const cnt=le16(b,6);const p=b.slice(8,8+cnt);if((off||0)+p.length>dumpExpectedBytes)dumpExpectedBytes=(off||0)+p.length;dumpAppendBytes(p);spiDump.textContent='dump offset '+off+' data '+p.length+' bytes';}else if(ch===WS_CH_SPI_DUMP_FF&&b.length>=8){const off=le32(b,2);const cnt=le16(b,6);if((off||0)+cnt>dumpExpectedBytes)dumpExpectedBytes=(off||0)+cnt;dumpAppendBytes(new Uint8Array(cnt).fill(0xFF));spiDump.textContent='dump offset '+off+' ff-run '+cnt+' bytes';}}else{queueRx(b);}}};
+    ws.onmessage=(e)=>{if(typeof e.data==='string'){try{const m=JSON.parse(e.data);if(m.type==='hello'){aboutFw.textContent=m.fw||'--';aboutBuild.textContent=((m.build_date||'')+' '+(m.build_time||'')).trim()||'--';}else if(m.type==='uart.config'){if(typeof m.tx_pin==='number'&&typeof m.rx_pin==='number')uartPins.textContent='UART0 pins: TX=GPIO'+m.tx_pin+', RX=GPIO'+m.rx_pin;appendTerm('\n[config '+JSON.stringify(m)+']\n','ok');}else if(m.type==='uart.rxmon'){setRxMonUi(m);}else if(m.type==='system.bootsel'){appendTerm('\n[system entering USB boot mode]\n','ok');spiLog('[system] entering USB boot mode','ok');dbgLog('[system] entering USB boot mode','ok');}else if(m.type==='system.debug'){if(typeof m.level==='number'){dbgLevel.value=String(m.level);dbgStatus.textContent='level '+m.level;}dbgLog('[debug cfg] '+JSON.stringify(m),'dim');}else if(m.type==='debug.log'){dbgLog('L'+(m.level||0)+' '+(m.scope||'sys')+': '+(m.msg||''));}else if(m.type==='error'){appendTerm('\n[error '+(m.msg||'unknown')+']\n','err');dbgLog('[error] '+(m.code||'')+' '+(m.msg||'unknown'),'err');if((m.code||'').startsWith('SPI_')){spiLog('[spi.error] '+(m.msg||m.code),'err');spiDump.textContent='dump: error ('+(m.msg||m.code)+')';}}else if(m.type&&m.type.startsWith('spi.')){if(!handleSpiMessage(m))spiLog('[spi] '+JSON.stringify(m));}else{appendTerm('\n['+e.data+']\n');}}catch(_){appendTerm(e.data);}}else{const b=new Uint8Array(e.data);if(b.length>=2&&b[0]===WS_BIN_MAGIC){const ch=b[1];if(ch===WS_CH_UART){queueRx(b.slice(2));}else if(ch===WS_CH_SPI_DUMP_DATA&&b.length>=8){const off=le32(b,2);const cnt=le16(b,6);const p=b.slice(8,8+cnt);if((off||0)+p.length>dumpExpectedBytes)dumpExpectedBytes=(off||0)+p.length;dumpAppendBytes(p);spiDump.textContent='dump offset '+off+' data '+p.length+' bytes';}else if(ch===WS_CH_SPI_DUMP_FF&&b.length>=8){const off=le32(b,2);const cnt=le16(b,6);if((off||0)+cnt>dumpExpectedBytes)dumpExpectedBytes=(off||0)+cnt;dumpAppendBytes(new Uint8Array(cnt).fill(0xFF));spiDump.textContent='dump offset '+off+' ff-run '+cnt+' bytes';}}else{queueRx(b);}}};
 
     applyBtn.onclick=()=>{send({type:'uart.set_config',port:'uart0',baud:parseInt(document.getElementById('baud').value,10)||115200,data_bits:parseInt(document.getElementById('data').value,10)||8,parity:document.getElementById('parity').value,stop_bits:parseInt(document.getElementById('stop').value,10)||1,flow:'none'});markDirty(false);};
     document.getElementById('sendbytes').onclick=()=>{try{const src=tx.value;const b=parseByteInput(src);if(!b.length)return;sendBinary(b);addHistory(hexHistory,src);syncHistory(histHex,hexHistory,'recent hex...');}catch(err){appendTerm('\n[error '+err.message+']\n','err');}};
@@ -922,6 +945,13 @@
     hexCols.addEventListener('input',()=>{hexOffset=0;hex.textContent='';});
     retainKb.addEventListener('input',()=>{if(xterm)xterm.options.scrollback=xtermScrollback();});
     decodeMode.addEventListener('change',syncDecodeMode);
+    rxMonEn.addEventListener('change',()=>{send({type:rxMonEn.checked?'uart.rxmon.start':'uart.rxmon.stop'});});
+    rxMonReset.addEventListener('click',()=>{
+      rxMonEdgesTotal=0;
+      rxMonLastBaud=0;
+      rxMonStat.textContent='rxmon '+(rxMonEn.checked?'on':'off')+' | total edges 0';
+      rxMonStat.className='dim';
+    });
     spiSpeed.addEventListener('change',()=>{spiSpeedRaw.value=spiSpeed.value;});
     spiSpeedRaw.addEventListener('change',()=>{spiSpeed.value=spiSpeedRaw.value;});
     hexView.onchange=()=>{if(hexView.checked){shell.classList.add('hex');}else{shell.classList.remove('hex');pendingHexChunks=[];pendingHexBytes=0;if(hexTimer){clearTimeout(hexTimer);hexTimer=null;}}};
