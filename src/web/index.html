@@ -16,11 +16,11 @@
     .grow { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
     label { display:flex; gap:6px; align-items:center; }
     input, select, button { background:#0f172a; color:var(--fg); border:1px solid var(--line); padding:4px 8px; }
-    #shell { display:grid; grid-template-columns:1fr; gap:0; height:calc(100vh - 102px); }
+    #shell { display:grid; grid-template-columns:1fr; gap:0; height:320px; min-height:220px; }
     #shell.hex { grid-template-columns:2fr 1fr; }
     #shell.vt #term { display:none; }
     #shell.vt #termvt { display:block; }
-    .pane { min-height:0; overflow:auto; padding:10px; white-space:pre-wrap; word-break:break-word; border-right:1px solid #1f2937; outline:none; }
+    .pane { min-height:0; overflow:auto; padding:10px 10px 22px 10px; white-space:pre-wrap; word-break:break-word; border-right:1px solid #1f2937; outline:none; }
     #term { color:var(--fg); }
     #termvt { display:none; padding:0; white-space:normal; word-break:normal; }
     #hex { color:#93c5fd; background:#0a1222; display:none; }
@@ -118,6 +118,7 @@
     <button id="sendbytes">Send Bytes</button>
     <button id="dltext">Download Text Log</button>
     <button id="dlraw">Download Raw Binary</button>
+    <label><input id="scrolllock" type="checkbox">Disable Autoscroll</label>
     <button id="clear">Clear Terminal Output</button>
     <span class="dim">Tip: click terminal pane to type</span>
   </div>
@@ -172,7 +173,6 @@
               <tr><td>8</td><td>VCC</td><td>3V3</td></tr>
             </tbody>
           </table>
-          <div class="warn">UART is on GPIO0/GPIO1. SPI wiring above avoids conflict.</div>
         </div>
       </div>
     </div>
@@ -474,6 +474,7 @@
     const rxMonEn=document.getElementById('rxmonen');
     const rxMonStat=document.getElementById('rxmonstat');
     const rxMonReset=document.getElementById('rxmonreset');
+    const scrollLock=document.getElementById('scrolllock');
     const sendMode=document.getElementById('sendmode');
     const enterMode=document.getElementById('enter');
     const decodeMode=document.getElementById('decode');
@@ -547,7 +548,14 @@
     const WS_CH_SPI_DUMP_FF=0x03;
 
     function markDirty(v){if(v){applyBtn.classList.add('pending');dirty.classList.add('show');}else{applyBtn.classList.remove('pending');dirty.classList.remove('show');}}
-    function setTab(tab){activeTab=tab;const t=tab==='terminal';const s=tab==='spi';const r=tab==='raw';const d=tab==='debug';terminalPanel.classList.toggle('hidden',!t);spiPanel.classList.toggle('hidden',!s);rawPanel.classList.toggle('hidden',!r);debugPanel.classList.toggle('hidden',!d);tabTerm.classList.toggle('active',t);tabSpi.classList.toggle('active',s);tabRaw.classList.toggle('active',r);tabDebug.classList.toggle('active',d);if(t)term.focus();}
+    function setTab(tab){activeTab=tab;const t=tab==='terminal';const s=tab==='spi';const r=tab==='raw';const d=tab==='debug';terminalPanel.classList.toggle('hidden',!t);spiPanel.classList.toggle('hidden',!s);rawPanel.classList.toggle('hidden',!r);debugPanel.classList.toggle('hidden',!d);tabTerm.classList.toggle('active',t);tabSpi.classList.toggle('active',s);tabRaw.classList.toggle('active',r);tabDebug.classList.toggle('active',d);if(t)term.focus();layoutTerminalShell();}
+    function layoutTerminalShell(){
+      if(!shell||terminalPanel.classList.contains('hidden'))return;
+      const rect=shell.getBoundingClientRect();
+      const avail=window.innerHeight-rect.top-8;
+      shell.style.height=Math.max(220,avail)+'px';
+      if(xterm&&decodeMode.value==='vt100'&&typeof xterm.refresh==='function')xterm.refresh(0,xterm.rows-1);
+    }
     function appendLogLine(host,maxLines,s,cls){const line=document.createElement('div');if(cls)line.className=cls;line.textContent=s;host.appendChild(line);while(host.childElementCount>maxLines)host.removeChild(host.firstChild);host.scrollTop=host.scrollHeight;}
     function spiLog(s,cls){appendLogLine(spiOut,MAX_SPI_LOG_LINES,s,cls);}
     function dbgLog(s,cls){appendLogLine(dbgOut,MAX_DBG_LOG_LINES,s,cls);}
@@ -907,14 +915,14 @@
     function xtermScrollback(){return Math.max(256,Math.min(50000,Math.floor(termLimit()/120)));}
     function trimTerm(){const lim=termLimit();while(termCharCount>lim){const n=term.firstChild;if(!n||n===cursor)break;const l=(n.textContent||'').length;termCharCount-=l;term.removeChild(n);}if(termCharCount<0)termCharCount=0;}
     function atBottom(el){return el.scrollHeight-el.scrollTop-el.clientHeight<8;}
-    function appendTerm(text,cls){const stick=atBottom(term);const span=document.createElement('span');if(cls)span.className=cls;span.textContent=text;term.appendChild(span);appendTextLog(text);termCharCount+=text.length;trimTerm();keepCursor();if(stick)term.scrollTop=term.scrollHeight;}
+    function appendTerm(text,cls){const stick=atBottom(term);const span=document.createElement('span');if(cls)span.className=cls;span.textContent=text;term.appendChild(span);appendTextLog(text);termCharCount+=text.length;trimTerm();keepCursor();if(stick&&!scrollLock.checked)term.scrollTop=term.scrollHeight;}
     function appendTermStyled(text){const cls=[sgr.bold?'ansi-bold':'',sgr.fg,sgr.bg].filter(Boolean).join(' ');appendTerm(text,cls);}
     function parseSgr(code){if(!code||code==='0'){sgr.bold=false;sgr.fg='';sgr.bg='';return;}code.split(';').forEach(c=>{const n=parseInt(c||'0',10);if(n===0){sgr.bold=false;sgr.fg='';sgr.bg='';}else if(n===1)sgr.bold=true;else if(n===22)sgr.bold=false;else if(n===39)sgr.fg='';else if(n===49)sgr.bg='';else if((n>=30&&n<=37)||(n>=90&&n<=97))sgr.fg='fg'+n;else if((n>=40&&n<=47)||(n>=100&&n<=107))sgr.bg='bg'+n;});}
     function appendAnsi(text){let i=0;while(i<text.length){const esc=text.indexOf('\u001b[',i);if(esc<0){appendTermStyled(text.slice(i));break;}if(esc>i)appendTermStyled(text.slice(i,esc));const m=/^\u001b\[([0-9;]*)m/.exec(text.slice(esc));if(!m){appendTermStyled(text.slice(esc,esc+1));i=esc+1;continue;}parseSgr(m[1]);i=esc+m[0].length;}}
-    function appendHexNow(bytes){if(!hexView.checked)return;const stick=atBottom(hex);let out='';const cols=Math.max(4,Math.min(64,parseInt(hexCols.value,10)||16));for(let i=0;i<bytes.length;i+=cols){const chunk=bytes.slice(i,i+cols);const off=(hexOffset+i).toString(16).padStart(8,'0');const hx=Array.from(chunk,b=>b.toString(16).padStart(2,'0')).join(' ');const asc=Array.from(chunk,b=>(b>=32&&b<=126)?String.fromCharCode(b):'.').join('');out+=off+'  '+hx.padEnd(cols*3-1,' ')+'  '+asc+'\n';}hexOffset+=bytes.length;hex.textContent+=out;if(hex.textContent.length>hexLimit())hex.textContent=hex.textContent.slice(-hexLimit());if(stick)hex.scrollTop=hex.scrollHeight;}
+    function appendHexNow(bytes){if(!hexView.checked)return;const stick=atBottom(hex);let out='';const cols=Math.max(4,Math.min(64,parseInt(hexCols.value,10)||16));for(let i=0;i<bytes.length;i+=cols){const chunk=bytes.slice(i,i+cols);const off=(hexOffset+i).toString(16).padStart(8,'0');const hx=Array.from(chunk,b=>b.toString(16).padStart(2,'0')).join(' ');const asc=Array.from(chunk,b=>(b>=32&&b<=126)?String.fromCharCode(b):'.').join('');out+=off+'  '+hx.padEnd(cols*3-1,' ')+'  '+asc+'\n';}hexOffset+=bytes.length;hex.textContent+=out;if(hex.textContent.length>hexLimit())hex.textContent=hex.textContent.slice(-hexLimit());if(stick&&!scrollLock.checked)hex.scrollTop=hex.scrollHeight;}
     function flushHex(){if(!pendingHexBytes)return;const b=new Uint8Array(pendingHexBytes);let o=0;for(const ch of pendingHexChunks){b.set(ch,o);o+=ch.length;}pendingHexChunks=[];pendingHexBytes=0;appendHexNow(b);}
     function queueHex(bytes){if(!hexView.checked)return;pendingHexChunks.push(bytes);pendingHexBytes+=bytes.length;if(hexTimer)clearTimeout(hexTimer);const gap=Math.max(10,Math.min(2000,parseInt(hexGap.value,10)||100));hexTimer=setTimeout(()=>{hexTimer=null;flushHex();},gap);}
-    function processRxChunks(){if(!rxChunks.length){rxFlushTimer=null;return;}const parts=rxChunks;rxChunks=[];rxFlushTimer=null;let total=0;for(const p of parts)total+=p.length;const b=new Uint8Array(total);let o=0;for(const p of parts){b.set(p,o);o+=p.length;}pushRawLog(b);queueHex(b);const txt=dec.decode(b);if(decodeMode.value==='vt100'&&xterm){xterm.write(txt);appendTextLog(txt);}else if(decodeMode.value==='ansi')appendAnsi(txt);else appendTerm(txt);}
+    function processRxChunks(){if(!rxChunks.length){rxFlushTimer=null;return;}const parts=rxChunks;rxChunks=[];rxFlushTimer=null;let total=0;for(const p of parts)total+=p.length;const b=new Uint8Array(total);let o=0;for(const p of parts){b.set(p,o);o+=p.length;}pushRawLog(b);queueHex(b);const txt=dec.decode(b);if(decodeMode.value==='vt100'&&xterm){if(scrollLock.checked&&xterm.buffer&&xterm.buffer.active){const vp=xterm.buffer.active.viewportY;xterm.write(txt,()=>xterm.scrollToLine(vp));}else{xterm.write(txt);}appendTextLog(txt);}else if(decodeMode.value==='ansi')appendAnsi(txt);else appendTerm(txt);}
     function queueRx(bytes){rxChunks.push(bytes);if(rxFlushTimer===null)rxFlushTimer=setTimeout(processRxChunks,16);}
     function enterBytes(){if(enterMode.value==='none')return new Uint8Array([]);if(enterMode.value==='lf')return new Uint8Array([10]);if(enterMode.value==='crlf')return new Uint8Array([13,10]);return new Uint8Array([13]);}
     function sendBinary(arr){if(ws.readyState===1&&arr&&arr.length>0)ws.send(arr);}
@@ -926,7 +934,7 @@
     function loadScript(src){return new Promise((ok,fail)=>{const s=document.createElement('script');s.src=src;s.onload=ok;s.onerror=fail;document.head.appendChild(s);});}
     function loadCss(href){if(document.querySelector('link[data-xterm]'))return;const l=document.createElement('link');l.rel='stylesheet';l.href=href;l.setAttribute('data-xterm','1');document.head.appendChild(l);}
     async function ensureXterm(){if(xterm||xtermLoading||xtermFailed)return;xtermLoading=true;try{loadCss('__XTERM_CSS_URL__');if(!window.Terminal){try{await loadScript('__XTERM_JS_PRIMARY__');}catch(_){await loadScript('__XTERM_JS_FALLBACK__');}}xterm=new window.Terminal({cursorBlink:true,convertEol:false,scrollback:xtermScrollback(),theme:{background:'#0b0f14',foreground:'#e6edf3'}});xterm.open(termVt);xterm.onData(d=>sendBinary(enc.encode(d)));xterm.write('\r\n[VT100 mode active]\r\n');}catch(_){xtermFailed=true;appendTerm('\n[error failed to load xterm.js, check internet access]\n','err');decodeMode.value='ansi';shell.classList.remove('vt');}finally{xtermLoading=false;}}
-    function syncDecodeMode(){if(decodeMode.value==='vt100'){shell.classList.add('vt');ensureXterm();}else{shell.classList.remove('vt');}}
+    function syncDecodeMode(){if(decodeMode.value==='vt100'){shell.classList.add('vt');ensureXterm();}else{shell.classList.remove('vt');}layoutTerminalShell();}
 
     ws.onopen=()=>{st.textContent='connected';st.className='ok';send({type:'hello'});send({type:'uart.get_config',port:'uart0'});send({type:'uart.rxmon.get'});spiSend('spi.get_config');send({type:'system.get_debug'});term.focus();};
     ws.onclose=()=>{st.textContent='disconnected';st.className='err';};
@@ -1000,7 +1008,9 @@
     spiDumpStartBtn.onclick=()=>startRead(true);
     spiDumpStopBtn.onclick=()=>{spiSt.textContent='stopping dump...';spiSt.className='dim';spiDump.textContent='dump: stopping...';spiSend('spi.dump.stop');};
     term.addEventListener('keydown',(e)=>{if(decodeMode.value==='vt100')return;if(ws.readyState!==1)return;if(sendMode.value==='type'){if(e.key==='Enter'){sendBinary(enterBytes());if(localEcho.checked)appendTerm('\n','dim');}else if(e.key==='Backspace'){sendBinary(new Uint8Array([127]));if(localEcho.checked)appendTerm('\b','dim');}else if(e.key.length===1){sendBinary(enc.encode(e.key));if(localEcho.checked)appendTerm(e.key,'dim');}else return;}else{if(e.key==='Enter'){sendTextLine(lineBuf);sendBinary(enterBytes());if(localEcho.checked)appendTerm('\n','dim');lineBuf='';}else if(e.key==='Backspace'){if(lineBuf.length>0)lineBuf=lineBuf.slice(0,-1);}else if(e.key.length===1){lineBuf+=e.key;if(localEcho.checked)appendTerm(e.key,'dim');}else return;}e.preventDefault();});
+    window.addEventListener('resize',layoutTerminalShell);
     setTab('terminal');
+    layoutTerminalShell();
     syncDecodeMode();
     buildRawRows();
     resetPinUi();
