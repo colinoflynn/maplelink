@@ -376,6 +376,10 @@
     let dumpUiTimer=null;
     const MAX_SPI_LOG_LINES=300;
     const MAX_DBG_LOG_LINES=600;
+    const WS_BIN_MAGIC=0xB0;
+    const WS_CH_UART=0x01;
+    const WS_CH_SPI_DUMP_DATA=0x02;
+    const WS_CH_SPI_DUMP_FF=0x03;
 
     function markDirty(v){if(v){applyBtn.classList.add('pending');dirty.classList.add('show');}else{applyBtn.classList.remove('pending');dirty.classList.remove('show');}}
     function setTab(tab){activeTab=tab;const t=tab==='terminal';const s=tab==='spi';const d=tab==='debug';terminalPanel.classList.toggle('hidden',!t);spiPanel.classList.toggle('hidden',!s);debugPanel.classList.toggle('hidden',!d);tabTerm.classList.toggle('active',t);tabSpi.classList.toggle('active',s);tabDebug.classList.toggle('active',d);if(t)term.focus();}
@@ -384,6 +388,8 @@
     function dbgLog(s,cls){appendLogLine(dbgOut,MAX_DBG_LOG_LINES,s,cls);}
     function spiSend(type,obj){const m=Object.assign({type:type,port:'spi0'},obj||{});send(m);}
     function parseNum(s,def){const n=parseInt(String(s||''),10);return Number.isFinite(n)?n:def;}
+    function le16(b,i){return (b[i]|(b[i+1]<<8))>>>0;}
+    function le32(b,i){return (b[i]|(b[i+1]<<8)|(b[i+2]<<16)|(b[i+3]<<24))>>>0;}
     function parseHexByte(s,def){let t=String(s||'').trim().toLowerCase();if(t.startsWith('0x'))t=t.slice(2);if(!/^[0-9a-f]{1,2}$/.test(t))return def;return parseInt(t,16);}
     function setMap(el,pin,suffix){if(!el)return;el.textContent='GPIO'+pin+(suffix||'');}
     function parseHexBytesLoose(s){const out=[];if(!s)return out;const toks=String(s).trim().split(/[\s,]+/).filter(Boolean);for(const t0 of toks){let t=t0.toLowerCase();if(t.startsWith('0x'))t=t.slice(2);if(!/^[0-9a-f]{1,2}$/.test(t))continue;out.push(parseInt(t,16));}return out;}
@@ -579,7 +585,7 @@
 
     ws.onopen=()=>{st.textContent='connected';st.className='ok';send({type:'hello'});send({type:'uart.get_config',port:'uart0'});spiSend('spi.get_config');send({type:'system.get_debug'});term.focus();};
     ws.onclose=()=>{st.textContent='disconnected';st.className='err';};
-    ws.onmessage=(e)=>{if(typeof e.data==='string'){try{const m=JSON.parse(e.data);if(m.type==='uart.config'){appendTerm('\n[config '+JSON.stringify(m)+']\n','ok');}else if(m.type==='system.bootsel'){appendTerm('\n[system entering USB boot mode]\n','ok');spiLog('[system] entering USB boot mode','ok');dbgLog('[system] entering USB boot mode','ok');}else if(m.type==='system.debug'){if(typeof m.level==='number'){dbgLevel.value=String(m.level);dbgStatus.textContent='level '+m.level;}dbgLog('[debug cfg] '+JSON.stringify(m),'dim');}else if(m.type==='debug.log'){dbgLog('L'+(m.level||0)+' '+(m.scope||'sys')+': '+(m.msg||''));}else if(m.type==='error'){appendTerm('\n[error '+(m.msg||'unknown')+']\n','err');dbgLog('[error] '+(m.code||'')+' '+(m.msg||'unknown'),'err');if((m.code||'').startsWith('SPI_')){spiLog('[spi.error] '+(m.msg||m.code),'err');spiDump.textContent='dump: error ('+(m.msg||m.code)+')';}}else if(m.type&&m.type.startsWith('spi.')){if(!handleSpiMessage(m))spiLog('[spi] '+JSON.stringify(m));}else{appendTerm('\n['+e.data+']\n');}}catch(_){appendTerm(e.data);}}else{queueRx(new Uint8Array(e.data));}};
+    ws.onmessage=(e)=>{if(typeof e.data==='string'){try{const m=JSON.parse(e.data);if(m.type==='uart.config'){appendTerm('\n[config '+JSON.stringify(m)+']\n','ok');}else if(m.type==='system.bootsel'){appendTerm('\n[system entering USB boot mode]\n','ok');spiLog('[system] entering USB boot mode','ok');dbgLog('[system] entering USB boot mode','ok');}else if(m.type==='system.debug'){if(typeof m.level==='number'){dbgLevel.value=String(m.level);dbgStatus.textContent='level '+m.level;}dbgLog('[debug cfg] '+JSON.stringify(m),'dim');}else if(m.type==='debug.log'){dbgLog('L'+(m.level||0)+' '+(m.scope||'sys')+': '+(m.msg||''));}else if(m.type==='error'){appendTerm('\n[error '+(m.msg||'unknown')+']\n','err');dbgLog('[error] '+(m.code||'')+' '+(m.msg||'unknown'),'err');if((m.code||'').startsWith('SPI_')){spiLog('[spi.error] '+(m.msg||m.code),'err');spiDump.textContent='dump: error ('+(m.msg||m.code)+')';}}else if(m.type&&m.type.startsWith('spi.')){if(!handleSpiMessage(m))spiLog('[spi] '+JSON.stringify(m));}else{appendTerm('\n['+e.data+']\n');}}catch(_){appendTerm(e.data);}}else{const b=new Uint8Array(e.data);if(b.length>=2&&b[0]===WS_BIN_MAGIC){const ch=b[1];if(ch===WS_CH_UART){queueRx(b.slice(2));}else if(ch===WS_CH_SPI_DUMP_DATA&&b.length>=8){const off=le32(b,2);const cnt=le16(b,6);const p=b.slice(8,8+cnt);if((off||0)+p.length>dumpExpectedBytes)dumpExpectedBytes=(off||0)+p.length;dumpAppendBytes(p);spiDump.textContent='dump offset '+off+' data '+p.length+' bytes';}else if(ch===WS_CH_SPI_DUMP_FF&&b.length>=8){const off=le32(b,2);const cnt=le16(b,6);if((off||0)+cnt>dumpExpectedBytes)dumpExpectedBytes=(off||0)+cnt;dumpAppendBytes(new Uint8Array(cnt).fill(0xFF));spiDump.textContent='dump offset '+off+' ff-run '+cnt+' bytes';}}else{queueRx(b);}}};
 
     applyBtn.onclick=()=>{send({type:'uart.set_config',port:'uart0',baud:parseInt(document.getElementById('baud').value,10)||115200,data_bits:parseInt(document.getElementById('data').value,10)||8,parity:document.getElementById('parity').value,stop_bits:parseInt(document.getElementById('stop').value,10)||1,flow:'none'});markDirty(false);};
     document.getElementById('sendbytes').onclick=()=>{try{const src=tx.value;const b=parseByteInput(src);if(!b.length)return;sendBinary(b);addHistory(hexHistory,src);syncHistory(histHex,hexHistory,'recent hex...');}catch(err){appendTerm('\n[error '+err.message+']\n','err');}};

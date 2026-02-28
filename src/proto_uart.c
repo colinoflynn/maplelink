@@ -13,6 +13,8 @@
 #define SERIAL_TX_PIN 0
 #define SERIAL_RX_PIN 1
 #define RX_TMP_BUF_LEN 64
+#define WS_BIN_MAGIC 0xB0u
+#define WS_CH_UART 0x01u
 
 typedef struct {
   uint32_t baud;
@@ -175,11 +177,17 @@ void proto_uart_poll(void) {
   if (!uart_is_readable(SERIAL_UART_ID)) return;
 
   uint8_t tmp[RX_TMP_BUF_LEN];
+  uint8_t framed[RX_TMP_BUF_LEN + 2];
   size_t n = 0;
 
   while (n < RX_TMP_BUF_LEN && uart_is_readable(SERIAL_UART_ID)) {
     tmp[n++] = uart_getc(SERIAL_UART_ID);
   }
 
-  if (n > 0) (void)app_send_binary(tmp, (uint16_t)n);
+  if (n > 0) {
+    framed[0] = WS_BIN_MAGIC;
+    framed[1] = WS_CH_UART;
+    memcpy(&framed[2], tmp, n);
+    (void)app_send_binary(framed, (uint16_t)(n + 2u));
+  }
 }

@@ -27,9 +27,12 @@
 #define SPI_MAX_IDPOLL_MS 5000u
 #define SPI_MAX_DUMP_CHUNK 4096u
 #define SPI_MAX_SNIFF_BYTES 512u
-#define SPI_DUMP_WS_HEX_BYTES 32u
-#define SPI_DUMP_WS_INTERVAL_MS 4u
-#define SPI_DUMP_FF_SCAN_MAX_BYTES 512u
+#define SPI_DUMP_WS_DATA_BYTES 256u
+#define SPI_DUMP_WS_INTERVAL_MS 2u
+#define SPI_DUMP_FF_SCAN_MAX_BYTES 1024u
+#define WS_BIN_MAGIC 0xB0u
+#define WS_CH_SPI_DUMP_DATA 0x02u
+#define WS_CH_SPI_DUMP_FF 0x03u
 
 typedef struct {
   bool tristate_default;
@@ -104,6 +107,32 @@ static bool starts_with(const char *s, const char *prefix) {
 
 static uint32_t now_ms(void) { return to_ms_since_boot(get_absolute_time()); }
 static void spi_dbg(uint8_t level, const char *msg) { (void)app_debug_log(level, "spi", msg); }
+static void wr_le16(uint8_t *p, uint16_t v) { p[0] = (uint8_t)(v & 0xFFu); p[1] = (uint8_t)((v >> 8) & 0xFFu); }
+static void wr_le32(uint8_t *p, uint32_t v) {
+  p[0] = (uint8_t)(v & 0xFFu);
+  p[1] = (uint8_t)((v >> 8) & 0xFFu);
+  p[2] = (uint8_t)((v >> 16) & 0xFFu);
+  p[3] = (uint8_t)((v >> 24) & 0xFFu);
+}
+static bool send_dump_data_bin(uint32_t offset, const uint8_t *data, uint16_t count) {
+  uint8_t fr[8u + SPI_DUMP_WS_DATA_BYTES];
+  if (count == 0 || count > SPI_DUMP_WS_DATA_BYTES) return false;
+  fr[0] = WS_BIN_MAGIC;
+  fr[1] = WS_CH_SPI_DUMP_DATA;
+  wr_le32(&fr[2], offset);
+  wr_le16(&fr[6], count);
+  memcpy(&fr[8], data, count);
+  return app_send_binary(fr, (uint16_t)(8u + count));
+}
+static bool send_dump_ff_bin(uint32_t offset, uint16_t count) {
+  uint8_t fr[8];
+  if (count == 0) return false;
+  fr[0] = WS_BIN_MAGIC;
+  fr[1] = WS_CH_SPI_DUMP_FF;
+  wr_le32(&fr[2], offset);
+  wr_le16(&fr[6], count);
+  return app_send_binary(fr, (uint16_t)sizeof(fr));
+}
 
 static uint32_t clamp_u32(uint32_t v, uint32_t lo, uint32_t hi) {
   if (v < lo) return lo;
@@ -613,6 +642,7 @@ void proto_spi_poll(void) {
 
     uint32_t n = left > g_spi.dump_chunk_bytes ? g_spi.dump_chunk_bytes : left;
     uint32_t read_n = n;
+    uint32_t n_send;
     bool ff_run = false;
     bool ok;
 
@@ -632,9 +662,9 @@ void proto_spi_poll(void) {
       }
       n = read_n;
       ff_run = is_all_ff(g_spi.dump_buf, n);
-      if (!ff_run && n > SPI_DUMP_WS_HEX_BYTES) n = SPI_DUMP_WS_HEX_BYTES;
+      if (!ff_run && n > SPI_DUMP_WS_DATA_BYTES) n = SPI_DUMP_WS_DATA_BYTES;
     } else {
-      if (n > SPI_DUMP_WS_HEX_BYTES) n = SPI_DUMP_WS_HEX_BYTES;
+      if (n > SPI_DUMP_WS_DATA_BYTES) n = SPI_DUMP_WS_DATA_BYTES;
       ok = read_flash_region(g_spi.dump_sent_bytes, g_spi.dump_read_cmd, g_spi.dump_addr_bytes, g_spi.dump_buf, n);
       if (!ok) {
         g_spi.dump_enabled = false;
@@ -646,10 +676,11 @@ void proto_spi_poll(void) {
         return;
       }
     }
+    n_send = n;
 
     if (g_spi.dump_double_read) {
-      bool ok2 = read_flash_region(g_spi.dump_sent_bytes, g_spi.dump_read_cmd, g_spi.dump_addr_bytes, g_spi.dump_chk, n);
-      bool match = ok2 && (memcmp(g_spi.dump_buf, g_spi.dump_chk, n) == 0);
+      bool ok2 = read_flash_region(g_spi.dump_sent_bytes, g_spi.dump_read_cmd, g_spi.dump_addr_bytes, g_spi.dump_chk, n_send);
+      bool match = ok2 && (memcmp(g_spi.dump_buf, g_spi.dump_chk, n_send) == 0);
       (void)app_send_text(match ? "{\"type\":\"spi.dump.verify\",\"ok\":true}" : "{\"type\":\"spi.dump.verify\",\"ok\":false}");
       if (!match) {
         g_spi.dump_enabled = false;
@@ -662,21 +693,14 @@ void proto_spi_poll(void) {
     }
 
     if (g_spi.dump_ff_opt && ff_run) {
-      char out[160];
-      snprintf(out, sizeof(out), "{\"type\":\"spi.dump.chunk\",\"mode\":\"ff_run\",\"offset\":%lu,\"count\":%lu}",
-               (unsigned long)g_spi.dump_sent_bytes, (unsigned long)n);
-      if (!app_send_text(out)) return;
+      if (n_send > 0xFFFFu) n_send = 0xFFFFu;
+      if (!send_dump_ff_bin(g_spi.dump_sent_bytes, (uint16_t)n_send)) return;
     } else {
-      char out[512];
-      char hx[(3 * SPI_DUMP_WS_HEX_BYTES) + 1];
-      bytes_to_hex(&g_spi.dump_buf[0], n, hx, sizeof(hx));
-      snprintf(out, sizeof(out),
-               "{\"type\":\"spi.dump.chunk\",\"mode\":\"data\",\"offset\":%lu,\"hex\":\"%s\",\"count\":%lu}",
-               (unsigned long)g_spi.dump_sent_bytes, hx, (unsigned long)n);
-      if (!app_send_text(out)) return;
+      if (n_send > SPI_DUMP_WS_DATA_BYTES) n_send = SPI_DUMP_WS_DATA_BYTES;
+      if (!send_dump_data_bin(g_spi.dump_sent_bytes, g_spi.dump_buf, (uint16_t)n_send)) return;
     }
 
-    g_spi.dump_sent_bytes += n;
+    g_spi.dump_sent_bytes += n_send;
     if (app_debug_level() >= 3u) {
       char m[96];
       snprintf(m, sizeof(m), "dump chunk sent: %lu/%lu", (unsigned long)g_spi.dump_sent_bytes,
