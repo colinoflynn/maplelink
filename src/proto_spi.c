@@ -292,6 +292,163 @@ static bool read_flash_region(uint32_t addr, uint8_t read_cmd, uint8_t addr_byte
   return true;
 }
 
+static bool read_sfdp_region(uint32_t addr, uint8_t *dst, uint32_t len) {
+  uint8_t hdr[5];
+  if (len == 0 || len > 256u) return false;
+  hdr[0] = 0x5Au;
+  hdr[1] = (uint8_t)((addr >> 16) & 0xFFu);
+  hdr[2] = (uint8_t)((addr >> 8) & 0xFFu);
+  hdr[3] = (uint8_t)(addr & 0xFFu);
+  hdr[4] = 0x00u;  // dummy
+  if (!g_spi.spi_active) spi_activate_master();
+  gpio_put(SPI_CS_PIN, 0);
+  if (spi_write_blocking(SPI_DEV, hdr, 5u) != 5) {
+    gpio_put(SPI_CS_PIN, 1);
+    return false;
+  }
+  if (spi_read_blocking(SPI_DEV, 0x00u, dst, len) != (int)len) {
+    gpio_put(SPI_CS_PIN, 1);
+    return false;
+  }
+  gpio_put(SPI_CS_PIN, 1);
+  return true;
+}
+
+static uint32_t rd_le32(const uint8_t *p) {
+  return (uint32_t)p[0] | ((uint32_t)p[1] << 8u) | ((uint32_t)p[2] << 16u) | ((uint32_t)p[3] << 24u);
+}
+
+static void handle_sfdp_read(const char *json) {
+  uint32_t req_len = 256u;
+  uint8_t buf[256];
+  uint8_t bfpt_buf[128];
+  char raw_hex[3 * 64];
+  char sig_txt[5];
+  char sig_hex[12];
+  char out[1024];
+  uint32_t nph = 0;
+  uint32_t rev_major = 0;
+  uint32_t rev_minor = 0;
+  bool bfpt_found = false;
+  uint32_t bfpt_ptr = 0;
+  uint32_t bfpt_len_dw = 0;
+  uint32_t bfpt_major = 0;
+  uint32_t bfpt_minor = 0;
+  uint64_t density_bits = 0;
+  uint64_t density_bytes = 0;
+  uint32_t density_raw = 0;
+  bool density_ok = false;
+  const char *addr_mode = "unknown";
+  uint32_t read_cmd_3b = 0x03u;
+  bool read4b_cmd_known = false;
+  uint32_t read_cmd_4b = 0u;
+
+  if (json_extract_u32(json, "length", &req_len)) {
+    if (req_len < 16u) req_len = 16u;
+    if (req_len > 256u) req_len = 256u;
+  }
+
+  if (g_spi.dump_enabled || g_spi.sniffer_enabled) {
+    (void)app_send_text("{\"type\":\"error\",\"code\":\"SPI_BUSY\",\"msg\":\"sfdp read blocked while dump/sniffer active\"}");
+    return;
+  }
+
+  if (!read_sfdp_region(0u, buf, req_len)) {
+    (void)app_send_text("{\"type\":\"spi.sfdp.result\",\"ok\":false,\"msg\":\"read failed\"}");
+    if (g_spi.tristate_default) spi_release_master();
+    return;
+  }
+
+  bytes_to_hex(buf, req_len > 64u ? 64u : req_len, raw_hex, sizeof(raw_hex));
+  // Keep signature JSON-safe and UTF-8 safe even for 0xFF/0x00 bytes.
+  for (uint32_t i = 0; i < 4u; i++) {
+    uint8_t c = buf[i];
+    sig_txt[i] = (c >= 32u && c <= 126u) ? (char)c : '.';
+  }
+  sig_txt[4] = 0;
+  snprintf(sig_hex, sizeof(sig_hex), "%02X %02X %02X %02X", buf[0], buf[1], buf[2], buf[3]);
+  if (req_len >= 8u && buf[0] == 'S' && buf[1] == 'F' && buf[2] == 'D' && buf[3] == 'P') {
+    rev_minor = buf[4];
+    rev_major = buf[5];
+    nph = (uint32_t)buf[6] + 1u;
+
+    // Parameter headers start at byte 8, each 8 bytes.
+    for (uint32_t i = 0; i < nph; i++) {
+      uint32_t off = 8u + (i * 8u);
+      uint8_t id_lsb;
+      uint8_t minr;
+      uint8_t majr;
+      uint8_t len_dw;
+      uint32_t ptp;
+      uint8_t id_msb;
+      if (off + 8u > req_len) break;
+      id_lsb = buf[off + 0u];
+      minr = buf[off + 1u];
+      majr = buf[off + 2u];
+      len_dw = buf[off + 3u];
+      ptp = (uint32_t)buf[off + 4u] | ((uint32_t)buf[off + 5u] << 8u) | ((uint32_t)buf[off + 6u] << 16u);
+      id_msb = buf[off + 7u];
+      // BFPT parameter ID is 0xFF00 (msb:0xFF, lsb:0x00).
+      if (id_lsb == 0x00u && id_msb == 0xFFu) {
+        bfpt_found = true;
+        bfpt_ptr = ptp;
+        bfpt_len_dw = len_dw;
+        bfpt_major = majr;
+        bfpt_minor = minr;
+      }
+      // 4-Byte Address Instruction Table (4BAIT), when present, can report
+      // explicit 4-byte opcodes (JESD216 parameter ID 0xFF84).
+      if (id_lsb == 0x84u && id_msb == 0xFFu && len_dw >= 1u && (ptp + 4u) <= req_len) {
+        uint8_t cmd = buf[ptp + 0u];
+        if (cmd != 0x00u && cmd != 0xFFu) {
+          read_cmd_4b = cmd;
+          read4b_cmd_known = true;
+        }
+      }
+    }
+
+    if (bfpt_found) {
+      uint32_t bfpt_bytes = bfpt_len_dw * 4u;
+      if (bfpt_bytes < 8u) bfpt_bytes = 8u;
+      if (bfpt_bytes > sizeof(bfpt_buf)) bfpt_bytes = sizeof(bfpt_buf);
+      if (read_sfdp_region(bfpt_ptr, bfpt_buf, bfpt_bytes)) {
+        uint32_t dword1 = rd_le32(&bfpt_buf[0]);
+        uint32_t addr_bits = (dword1 >> 16u) & 0x3u;
+        // JESD216 BFPT DWORD1 bits [17:16]
+        if (addr_bits == 0u) addr_mode = "3-byte only";
+        else if (addr_bits == 1u) addr_mode = "3-byte or 4-byte";
+        else if (addr_bits == 2u) addr_mode = "4-byte only";
+        else addr_mode = "reserved";
+
+        // BFPT DWORD2 contains density encoding.
+        density_raw = rd_le32(&bfpt_buf[4]);
+        if ((density_raw & 0x80000000u) == 0u) {
+          density_bits = (uint64_t)(density_raw & 0x7FFFFFFFu) + 1ull;
+          density_bytes = density_bits / 8ull;
+          density_ok = true;
+        }
+      }
+    }
+  }
+
+  snprintf(out, sizeof(out),
+           "{\"type\":\"spi.sfdp.result\",\"ok\":true,\"len\":%lu,\"sig\":\"%s\",\"sig_hex\":\"%s\","
+           "\"rev_major\":%lu,\"rev_minor\":%lu,\"nph\":%lu,"
+           "\"bfpt_found\":%s,\"bfpt_ptr\":%lu,\"bfpt_len_dw\":%lu,\"bfpt_rev_major\":%lu,\"bfpt_rev_minor\":%lu,"
+           "\"density_ok\":%s,\"density_bits\":%lu,\"density_bytes\":%lu,\"density_raw\":%lu,"
+           "\"addr_mode\":\"%s\",\"read_cmd_3b\":%lu,\"read4b_cmd_known\":%s,\"read_cmd_4b\":%lu,"
+           "\"raw_hex\":\"%s\"}",
+           (unsigned long)req_len, sig_txt, sig_hex, (unsigned long)rev_major,
+           (unsigned long)rev_minor, (unsigned long)nph, bfpt_found ? "true" : "false",
+           (unsigned long)bfpt_ptr, (unsigned long)bfpt_len_dw, (unsigned long)bfpt_major,
+            (unsigned long)bfpt_minor, density_ok ? "true" : "false",
+           (unsigned long)density_bits, (unsigned long)density_bytes, (unsigned long)density_raw,
+           addr_mode, (unsigned long)read_cmd_3b, read4b_cmd_known ? "true" : "false",
+           (unsigned long)read_cmd_4b, raw_hex);
+  (void)app_send_text(out);
+  if (g_spi.tristate_default) spi_release_master();
+}
+
 static void send_spi_state(void) {
   char out[768];
   snprintf(out, sizeof(out),
@@ -634,6 +791,11 @@ bool proto_spi_handle_text(const char *type, const char *json) {
     spi_dbg(1, "dump stopped by user");
     send_spi_status("stopped", "dump stopped");
     send_spi_state();
+    return true;
+  }
+
+  if (strcmp(type, "spi.sfdp.read") == 0) {
+    handle_sfdp_read(json);
     return true;
   }
 

@@ -212,6 +212,24 @@
           <div class="idlbl">Window Activity</div><div class="idval" id="idwintr">--</div>
         </div>
       </div>
+      <div class="idbox">
+        <div class="gtitle">READ SFDP</div>
+        <div class="grow">
+          <label>SFDP bytes <input id="sfdplen" type="number" min="16" max="256" step="16" value="256"></label>
+          <button id="sfdpread">Read SFDP</button>
+        </div>
+        <div class="idgrid">
+          <div class="idlbl">SFDP Signature</div><div class="idval" id="sfdpsig">--</div>
+          <div class="idlbl">SFDP Revision</div><div class="idval" id="sfdprev">--</div>
+          <div class="idlbl">Param Headers</div><div class="idval" id="sfdpnph">--</div>
+          <div class="idlbl">BFPT</div><div class="idval" id="sfdpbfpt">--</div>
+          <div class="idlbl">Address Bytes</div><div class="idval" id="sfdpaddr">--</div>
+          <div class="idlbl">Read Command</div><div class="idval" id="sfdpreadcmd">--</div>
+          <div class="idlbl">4-byte Read Cmd</div><div class="idval" id="sfdpread4">--</div>
+          <div class="idlbl">Density</div><div class="idval" id="sfdpdens">--</div>
+          <div class="idlbl">Raw (first 64 bytes)</div><div class="idval" id="sfdpraw">--</div>
+        </div>
+      </div>
     </div>
     <div class="group">
       <div class="gtitle">Dump</div>
@@ -295,6 +313,8 @@
     const spiSniffStopBtn=document.getElementById('spisniffstop');
     const spiIdStartBtn=document.getElementById('spiidstart');
     const spiIdStopBtn=document.getElementById('spiidstop');
+    const sfdpReadBtn=document.getElementById('sfdpread');
+    const sfdpLen=document.getElementById('sfdplen');
     const idPollCountEl=document.getElementById('idpollcount');
     const spiDumpStartBtn=document.getElementById('spidumpstart');
     const spiDumpStopBtn=document.getElementById('spidumpstop');
@@ -333,6 +353,15 @@
     const idSummary=document.getElementById('idsummary');
     const idWindow=document.getElementById('idwindow');
     const idWinTr=document.getElementById('idwintr');
+    const sfdpSig=document.getElementById('sfdpsig');
+    const sfdpRev=document.getElementById('sfdprev');
+    const sfdpNph=document.getElementById('sfdpnph');
+    const sfdpBfpt=document.getElementById('sfdpbfpt');
+    const sfdpAddr=document.getElementById('sfdpaddr');
+    const sfdpReadCmd=document.getElementById('sfdpreadcmd');
+    const sfdpRead4=document.getElementById('sfdpread4');
+    const sfdpDens=document.getElementById('sfdpdens');
+    const sfdpRaw=document.getElementById('sfdpraw');
     const mapMosi=document.getElementById('map-mosi');
     const mapMiso=document.getElementById('map-miso');
     const mapCs=document.getElementById('map-cs');
@@ -608,6 +637,41 @@
         idWinTr.textContent='total '+total+' (MOSI '+parseNum(tr.mosi,0)+', MISO '+parseNum(tr.miso,0)+', CS '+parseNum(tr.cs,0)+', CLK '+parseNum(tr.clk,0)+')';
         return true;
       }
+      if(m.type==='spi.sfdp.result'){
+        if(!m.ok){
+          sfdpSig.textContent='read failed';
+          sfdpRev.textContent='--';
+          sfdpNph.textContent='--';
+          sfdpBfpt.textContent='--';
+          sfdpAddr.textContent='--';
+          sfdpReadCmd.textContent='--';
+          sfdpRead4.textContent='--';
+          sfdpDens.textContent='--';
+          sfdpRaw.textContent='--';
+          return true;
+        }
+        sfdpSig.textContent=(m.sig||'--')+(m.sig_hex?(' ('+m.sig_hex+')'):'');
+        sfdpRev.textContent=(m.rev_major==null||m.rev_minor==null)?'--':('v'+m.rev_major+'.'+m.rev_minor);
+        sfdpNph.textContent=(m.nph==null)?'--':String(m.nph);
+        if(m.bfpt_found){
+          sfdpBfpt.textContent='ptr 0x'+parseNum(m.bfpt_ptr,0).toString(16)+', '+parseNum(m.bfpt_len_dw,0)+' dwords, rev '+parseNum(m.bfpt_rev_major,0)+'.'+parseNum(m.bfpt_rev_minor,0);
+        }else{
+          sfdpBfpt.textContent='not found';
+        }
+        sfdpAddr.textContent=m.addr_mode||'unknown';
+        sfdpReadCmd.textContent='0x'+parseNum(m.read_cmd_3b,3).toString(16).toUpperCase().padStart(2,'0');
+        sfdpRead4.textContent=(m.read4b_cmd_known?('0x'+parseNum(m.read_cmd_4b,0).toString(16).toUpperCase().padStart(2,'0')):'not reported in SFDP');
+        if(m.density_ok){
+          const bits=parseNum(m.density_bits,0);
+          const bytes=parseNum(m.density_bytes,0);
+          const mib=(bytes/1048576).toFixed(bytes>=16*1048576?0:2);
+          sfdpDens.textContent=bits+' bits ('+bytes+' bytes, '+mib+' MiB)';
+        }else{
+          sfdpDens.textContent='unknown (raw 0x'+parseNum(m.density_raw,0).toString(16)+')';
+        }
+        sfdpRaw.textContent=m.raw_hex||'--';
+        return true;
+      }
       if(m.type==='spi.sniffer.frame'){appendSnifferFrame(m);return true;}
       if(m.type==='spi.dump.chunk'){
         const count=parseNum(m.count,0);
@@ -700,6 +764,7 @@
     spiSniffStopBtn.onclick=()=>spiSend('spi.sniffer.stop');
     spiIdStartBtn.onclick=()=>{idPollCount=0;idPollCountEl.textContent='0';idWindow.textContent='--';idWindow.className='idval';idWinTr.textContent='--';spiSend('spi.idpoll.start',{interval_ms:parseNum(spiIdInt.value,250),speed_hz:parseNum(spiSpeed.value,1000000),monitor_between:spiIdMon.checked});};
     spiIdStopBtn.onclick=()=>{spiSend('spi.idpoll.stop');idWindow.textContent='--';idWindow.className='idval';idWinTr.textContent='--';};
+    sfdpReadBtn.onclick=()=>{spiSend('spi.sfdp.read',{length:parseNum(sfdpLen.value,256)});};
     spiDumpRows.addEventListener('input',renderDumpRecent);
     spiDumpStartBtn.onclick=()=>{spiSt.textContent='starting dump...';spiSt.className='dim';spiDump.textContent='dump: starting...';dumpExpectedBytes=parseNum(spiDumpLen.value,4096);dumpCapturedBytes=0;dumpRawChunks=[];dumpRecent=[];dumpDownloaded=false;dumpSessionActive=true;dumpStartMs=0;dumpLastRateMs=0;dumpLastRateBytes=0;dumpRateEma=0;if(dumpUiTimer){clearTimeout(dumpUiTimer);dumpUiTimer=null;}spiDumpRate.textContent='Rate: measuring...';renderDumpRecent();updateDumpProgress();spiSend('spi.dump.start',{read_cmd:parseHexByte(spiDumpCmd.value,0x03),addr_bytes:parseNum(spiDumpAddr.value,3),length_bytes:dumpExpectedBytes,chunk_bytes:parseNum(spiDumpChunk.value,256),double_read:spiDumpDbl.checked,verify_retries:parseNum(spiDumpRetry.value,0),ff_opt:spiDumpFf.checked,speed_hz:parseNum(spiSpeed.value,1000000)});};
     spiDumpStopBtn.onclick=()=>{spiSt.textContent='stopping dump...';spiSt.className='dim';spiDump.textContent='dump: stopping...';spiSend('spi.dump.stop');};
