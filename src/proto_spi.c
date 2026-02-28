@@ -30,6 +30,7 @@
 #define SPI_DUMP_WS_DATA_BYTES 256u
 #define SPI_DUMP_WS_INTERVAL_MS 2u
 #define SPI_DUMP_FF_SCAN_MAX_BYTES 1024u
+#define SPI_DUMP_VERIFY_MAX_BYTES 128u
 #define WS_BIN_MAGIC 0xB0u
 #define WS_CH_SPI_DUMP_DATA 0x02u
 #define WS_CH_SPI_DUMP_FF 0x03u
@@ -52,6 +53,7 @@ typedef struct {
   uint32_t dump_total_bytes;
   uint32_t dump_chunk_bytes;
   uint32_t dump_sent_bytes;
+  uint32_t dump_verify_ok_count;
   uint32_t last_detect_ms;
   uint32_t last_idpoll_ms;
   uint32_t last_dump_ms;
@@ -456,6 +458,7 @@ static void handle_dump_start(const char *json) {
   if (g_spi.dump_chunk_bytes > SPI_MAX_DUMP_CHUNK) g_spi.dump_chunk_bytes = SPI_MAX_DUMP_CHUNK;
 
   g_spi.dump_sent_bytes = 0;
+  g_spi.dump_verify_ok_count = 0;
   g_spi.last_dump_ms = now_ms();
   g_spi.dump_enabled = true;
   g_spi.idpoll_enabled = false;
@@ -677,11 +680,21 @@ void proto_spi_poll(void) {
       }
     }
     n_send = n;
+    if (g_spi.dump_double_read && n_send > SPI_DUMP_VERIFY_MAX_BYTES) n_send = SPI_DUMP_VERIFY_MAX_BYTES;
 
     if (g_spi.dump_double_read) {
-      bool ok2 = read_flash_region(g_spi.dump_sent_bytes, g_spi.dump_read_cmd, g_spi.dump_addr_bytes, g_spi.dump_chk, n_send);
-      bool match = ok2 && (memcmp(g_spi.dump_buf, g_spi.dump_chk, n_send) == 0);
-      (void)app_send_text(match ? "{\"type\":\"spi.dump.verify\",\"ok\":true}" : "{\"type\":\"spi.dump.verify\",\"ok\":false}");
+      uint32_t vlen = n_send;
+      if (vlen > SPI_DUMP_VERIFY_MAX_BYTES) vlen = SPI_DUMP_VERIFY_MAX_BYTES;
+      bool ok2 = read_flash_region(g_spi.dump_sent_bytes, g_spi.dump_read_cmd, g_spi.dump_addr_bytes, g_spi.dump_chk, vlen);
+      bool match = ok2 && (memcmp(g_spi.dump_buf, g_spi.dump_chk, vlen) == 0);
+      if (match) {
+        g_spi.dump_verify_ok_count++;
+        if ((g_spi.dump_verify_ok_count % 64u) == 0u) {
+          (void)app_send_text("{\"type\":\"spi.dump.verify\",\"ok\":true}");
+        }
+      } else {
+        (void)app_send_text("{\"type\":\"spi.dump.verify\",\"ok\":false}");
+      }
       if (!match) {
         g_spi.dump_enabled = false;
         spi_release_master();

@@ -187,6 +187,7 @@
         <label>ID Interval ms <input id="spiidint" type="number" min="50" max="5000" step="50" value="250"></label>
         <button id="spiidstart">Start ID Poll</button>
         <button id="spiidstop">Stop ID Poll</button>
+        <span class="dim">Poll count: <span id="idpollcount">0</span></span>
       </div>
       <div class="idbox">
         <div class="idgrid">
@@ -279,6 +280,7 @@
     const spiSniffStopBtn=document.getElementById('spisniffstop');
     const spiIdStartBtn=document.getElementById('spiidstart');
     const spiIdStopBtn=document.getElementById('spiidstop');
+    const idPollCountEl=document.getElementById('idpollcount');
     const spiDumpStartBtn=document.getElementById('spidumpstart');
     const spiDumpStopBtn=document.getElementById('spidumpstop');
     const spiTriState=document.getElementById('spitristate');
@@ -369,6 +371,7 @@
     let dumpRecent=[];
     let dumpSessionActive=false;
     let dumpDownloaded=false;
+    let idPollCount=0;
     let dumpStartMs=0;
     let dumpLastRateMs=0;
     let dumpLastRateBytes=0;
@@ -517,6 +520,8 @@
         return true;
       }
       if(m.type==='spi.id.result'){
+        idPollCount++;
+        idPollCountEl.textContent=String(idPollCount);
         const raw=(m.id_hex||'').trim();
         idRaw.textContent=raw||'--';
         const b=parseIdHex(raw);
@@ -615,8 +620,8 @@
     spiDetectStopBtn.onclick=()=>spiSend('spi.detect.stop');
     spiSniffStartBtn.onclick=()=>spiSend('spi.sniffer.start');
     spiSniffStopBtn.onclick=()=>spiSend('spi.sniffer.stop');
-    spiIdStartBtn.onclick=()=>spiSend('spi.idpoll.start',{interval_ms:parseNum(spiIdInt.value,250),speed_hz:parseNum(spiSpeed.value,1000000)});
-    spiIdStopBtn.onclick=()=>spiSend('spi.idpoll.stop');
+    spiIdStartBtn.onclick=()=>{idPollCount=0;idPollCountEl.textContent='0';spiSend('spi.idpoll.start',{interval_ms:parseNum(spiIdInt.value,250),speed_hz:parseNum(spiSpeed.value,1000000)});};
+    spiIdStopBtn.onclick=()=>{spiSend('spi.idpoll.stop');};
     spiDumpRows.addEventListener('input',renderDumpRecent);
     spiDumpStartBtn.onclick=()=>{spiSt.textContent='starting dump...';spiSt.className='dim';spiDump.textContent='dump: starting...';dumpExpectedBytes=parseNum(spiDumpLen.value,4096);dumpCapturedBytes=0;dumpRawChunks=[];dumpRecent=[];dumpDownloaded=false;dumpSessionActive=true;dumpStartMs=0;dumpLastRateMs=0;dumpLastRateBytes=0;dumpRateEma=0;if(dumpUiTimer){clearTimeout(dumpUiTimer);dumpUiTimer=null;}spiDumpRate.textContent='Rate: measuring...';renderDumpRecent();updateDumpProgress();spiSend('spi.dump.start',{read_cmd:parseHexByte(spiDumpCmd.value,0x03),addr_bytes:parseNum(spiDumpAddr.value,3),length_bytes:dumpExpectedBytes,chunk_bytes:parseNum(spiDumpChunk.value,256),double_read:spiDumpDbl.checked,ff_opt:spiDumpFf.checked,speed_hz:parseNum(spiSpeed.value,1000000)});};
     spiDumpStopBtn.onclick=()=>{spiSt.textContent='stopping dump...';spiSt.className='dim';spiDump.textContent='dump: stopping...';spiSend('spi.dump.stop');};
