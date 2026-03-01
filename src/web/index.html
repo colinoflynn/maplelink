@@ -294,6 +294,22 @@
       <div class="grow">
         <label>Live rows <input id="spidumprows" type="number" min="1" max="64" step="1" value="16"></label>
       </div>
+      <div class="idbox">
+        <div class="gtitle">Common Size Guide</div>
+        <table class="wmap">
+          <thead>
+            <tr><th>Memory size in bits</th><th>Dump Length</th><th>Address Mode</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>8 Mbit</td><td>1048576</td><td>3-byte</td></tr>
+            <tr><td>32 Mbit</td><td>4194304</td><td>3-byte</td></tr>
+            <tr><td>128 Mbit</td><td>16777216</td><td>3-byte</td></tr>
+            <tr><td>256 Mbit</td><td>33554432</td><td>4-byte</td></tr>
+            <tr><td>512 Mbit</td><td>67108864</td><td>4-byte</td></tr>
+            <tr><td>1024 Mbit</td><td>134217728</td><td>4-byte</td></tr>
+          </tbody>
+        </table>
+      </div>
       <div class="dbar">
         <div class="dumpmeta" id="spidumplabel">Progress: 0 / 0 bytes (0%)</div>
         <div class="dumprate" id="spidumprate">Rate: --</div>
