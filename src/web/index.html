@@ -75,6 +75,7 @@
     .dumprate { font-size:12px; color:#93c5fd; margin-top:4px; }
     .prog { width:100%; height:14px; }
     #spilasthex { margin-top:8px; border:1px solid #334155; background:#0a1222; border-radius:6px; padding:8px; color:#93c5fd; font-size:12px; white-space:pre; overflow:auto; max-height:220px; }
+    #emmcdumplast { margin-top:8px; border:1px solid #334155; background:#0a1222; border-radius:6px; padding:8px; color:#93c5fd; font-size:12px; white-space:pre; overflow:hidden; max-height:none; }
     #spidump { color:#93c5fd; font-size:12px; }
     #emmcout { height:320px; min-height:180px; overflow:auto; padding:10px; white-space:pre-wrap; border-top:1px solid #1f2937; color:#cbd5e1; }
     .rawrow { display:grid; grid-template-columns:minmax(260px,1fr) auto auto; gap:8px; align-items:center; margin-bottom:6px; }
@@ -378,11 +379,29 @@
           <div class="idlbl">OCR Flags</div><div class="idval" id="emmcoflags">--</div>
           <div class="idlbl">Addressing</div><div class="idval" id="emmcaddrmode">--</div>
           <div class="idlbl">CSD Summary</div><div class="idval" id="emmccsdsum">--</div>
-          <div class="idlbl">Dump Readiness</div><div class="idval" id="emmcdumpready">--</div>
           <div class="idlbl">Between Polls</div><div class="idval" id="emmcidwindow">--</div>
           <div class="idlbl">Window Activity</div><div class="idval" id="emmcidtr">--</div>
         </div>
       </div>
+    </div>
+    <div class="group">
+      <div class="gtitle">Dump (Experimental)</div>
+      <div class="grow">
+        <label>Start LBA <input id="emmcdumpstart" type="text" value="0"></label>
+        <label>Blocks <input id="emmcdumpblocks" type="number" min="1" step="1" value="16"></label>
+        <label>Chunk <input id="emmcdumpchunk" type="number" min="16" max="256" step="16" value="256"></label>
+        <label><input id="emmcdumpdbl" type="checkbox">Double-read verify</label>
+        <label>Verify retries <input id="emmcdumpvretry" type="number" min="0" max="8" step="1" value="1"></label>
+        <label>Auto retries <input id="emmcdumparetry" type="number" min="0" max="32" step="1" value="4"></label>
+        <label>Live rows <input id="emmcdumprows" type="number" min="1" max="64" step="1" value="16"></label>
+        <button id="emmcdumpstartbtn">Start Dump</button>
+        <button id="emmcdumpstopbtn">Stop Dump</button>
+        <button id="emmcdumpdlbtn">Download Bin</button>
+        <span class="dim" id="emmcdumpfilemeta">emmc_dump_--.bin (0 bytes)</span>
+      </div>
+      <div class="dim" id="emmcdumpstat">dump: idle</div>
+      <div class="dumprate" id="emmcdumprate">Rate: --</div>
+      <div id="emmcdumplast">last dump bytes will appear here</div>
     </div>
     <div id="emmcout"></div>
   </div>
@@ -522,6 +541,20 @@
     const emmcSdTestBtn=document.getElementById('emmcsdtest');
     const emmcIdStartBtn=document.getElementById('emmcidstart');
     const emmcIdStopBtn=document.getElementById('emmcidstop');
+    const emmcDumpStartEl=document.getElementById('emmcdumpstart');
+    const emmcDumpBlocksEl=document.getElementById('emmcdumpblocks');
+    const emmcDumpChunkEl=document.getElementById('emmcdumpchunk');
+    const emmcDumpDblEl=document.getElementById('emmcdumpdbl');
+    const emmcDumpVRetryEl=document.getElementById('emmcdumpvretry');
+    const emmcDumpARetryEl=document.getElementById('emmcdumparetry');
+    const emmcDumpRowsEl=document.getElementById('emmcdumprows');
+    const emmcDumpStartBtn=document.getElementById('emmcdumpstartbtn');
+    const emmcDumpStopBtn=document.getElementById('emmcdumpstopbtn');
+    const emmcDumpDlBtn=document.getElementById('emmcdumpdlbtn');
+    const emmcDumpFileMetaEl=document.getElementById('emmcdumpfilemeta');
+    const emmcDumpStatEl=document.getElementById('emmcdumpstat');
+    const emmcDumpRateEl=document.getElementById('emmcdumprate');
+    const emmcDumpLastEl=document.getElementById('emmcdumplast');
     const emmcTriState=document.getElementById('emmctristate');
     const emmcPullups=document.getElementById('emmcpullups');
     const emmcSpeed=document.getElementById('emmcspeed');
@@ -541,7 +574,6 @@
     const emmcOcrFlagsEl=document.getElementById('emmcoflags');
     const emmcAddrModeEl=document.getElementById('emmcaddrmode');
     const emmcCsdSumEl=document.getElementById('emmccsdsum');
-    const emmcDumpReadyEl=document.getElementById('emmcdumpready');
     const emmcIdWindowEl=document.getElementById('emmcidwindow');
     const emmcIdTrEl=document.getElementById('emmcidtr');
     const rawOut=document.getElementById('rawout');
@@ -684,6 +716,17 @@
     let emmcIdCount=0;
     let emmcDetectActive=false;
     let emmcIdPollActive=false;
+    let emmcDumpActive=false;
+    let emmcDumpChunks=[];
+    let emmcDumpPieces=new Map();
+    let emmcDumpBytes=0;
+    let emmcDumpExpectedBytes=0;
+    let emmcDumpRecent=[];
+    let emmcDumpStartStamp='';
+    let emmcDumpStartMs=0;
+    let emmcDumpLastRateMs=0;
+    let emmcDumpLastRateBytes=0;
+    let emmcDumpRateEma=0;
     const MAX_SPI_LOG_LINES=300;
     const MAX_DBG_LOG_LINES=600;
     const MAX_SNIFF_LINES=240;
@@ -691,6 +734,7 @@
     const WS_CH_UART=0x01;
     const WS_CH_SPI_DUMP_DATA=0x02;
     const WS_CH_SPI_DUMP_FF=0x03;
+    const WS_CH_EMMC_DUMP_DATA=0x04;
 
     function renderVerifyStatus(){
       if(!spiDumpDbl.checked){
@@ -752,7 +796,7 @@
     function layoutEmmcLog(){
       if(!emmcOut||emmcPanel.classList.contains('hidden'))return;
       const rect=emmcOut.getBoundingClientRect();
-      const avail=window.innerHeight-rect.top-8;
+      const avail=window.innerHeight-rect.top-12;
       emmcOut.style.height=Math.max(180,avail)+'px';
     }
     function appendLogLine(host,maxLines,s,cls){const line=document.createElement('div');if(cls)line.className=cls;line.textContent=s;host.appendChild(line);while(host.childElementCount>maxLines)host.removeChild(host.firstChild);host.scrollTop=host.scrollHeight;}
@@ -805,6 +849,53 @@
       if(need&&b.length!==need)return null;
       return b;
     }
+    function parseHexCompact(s){
+      const t=String(s||'').trim().replace(/\s+/g,'');
+      if(!t||!/^[0-9a-fA-F]+$/.test(t)||(t.length%2)!==0)return [];
+      const out=new Uint8Array(t.length/2);
+      for(let i=0;i<t.length;i+=2)out[i>>1]=parseInt(t.slice(i,i+2),16);
+      return out;
+    }
+    function hexLine(bytes){
+      const b=(bytes instanceof Uint8Array)?bytes:Uint8Array.from(bytes||[]);
+      if(!b.length)return '--';
+      return Array.from(b,v=>v.toString(16).toUpperCase().padStart(2,'0')).join(' ');
+    }
+    function emmcAssembleDump(){
+      if(!emmcDumpPieces.size)return null;
+      let maxEnd=0;
+      for(const [k,v] of emmcDumpPieces.entries()){
+        const end=k+v.length;
+        if(end>maxEnd)maxEnd=end;
+      }
+      // Do not pad trailing bytes: file length ends at highest received offset.
+      const total=maxEnd;
+      if(total<=0)return null;
+      const out=new Uint8Array(total);
+      const filled=new Uint8Array(total);
+      for(const [k,v] of emmcDumpPieces.entries()){
+        out.set(v,k);
+        filled.fill(1,k,Math.min(total,k+v.length));
+      }
+      let missing=0;
+      for(let i=0;i<filled.length;i++)if(!filled[i])missing++;
+      return {bytes:out,missing:missing,total:total};
+    }
+    function appendEmmcDumpChunk(absOffset,bytes){
+      const c=(bytes instanceof Uint8Array)?bytes:Uint8Array.from(bytes||[]);
+      if(!c.length)return;
+      const copy=new Uint8Array(c.length);copy.set(c);
+      emmcDumpChunks.push(copy);
+      emmcDumpPieces.set(absOffset,copy);
+      for(let i=0;i<copy.length;i++)emmcDumpRecent.push(copy[i]);
+      const keep=Math.max(16,emmcDumpRowsLimit()*16);
+      if(emmcDumpRecent.length>keep)emmcDumpRecent=emmcDumpRecent.slice(emmcDumpRecent.length-keep);
+      renderEmmcDumpRecent();
+      const asm=emmcAssembleDump();
+      if(asm)emmcDumpBytes=Math.max(0,asm.total-asm.missing);
+      updateEmmcDumpFileMeta();
+      updateEmmcDumpProgress();
+    }
     function asciiLoose(bytes){
       if(!bytes||!bytes.length)return '--';
       let out='';
@@ -856,14 +947,6 @@
       const v=(parseNum(ocr,0)>>>0);
       return ((v&0x40000000)!==0)?'Block addressing (likely 512-byte sectors)':'Byte addressing (legacy)';
     }
-    function emmcDumpReadinessText(m){
-      const ocr=(parseNum(m.ocr,0)>>>0);
-      const ready=((ocr&0x80000000)!==0);
-      const hc=((ocr&0x40000000)!==0);
-      if(!ready)return 'Not ready: OCR busy bit not set';
-      const mode=hc?'HC/block':'legacy/byte';
-      return 'Path alive ('+mode+'). For safe full dump still need EXT_CSD: SEC_COUNT, PARTITION_CONFIG, BOOT_SIZE_MULT, HC_ERASE_GRP_SIZE.';
-    }
     function setLikelyAddrBytesFromCapacity(bytes){
       if(!(bytes>0))return;
       const next=(bytes>0x1000000)?4:3;
@@ -912,6 +995,7 @@
       sniffOfEl.textContent=sniffOverflow?'yes':'no';
     }
     function dumpRowsLimit(){return Math.max(1,Math.min(64,parseInt(spiDumpRows.value,10)||16));}
+    function emmcDumpRowsLimit(){return Math.max(1,Math.min(64,parseInt(emmcDumpRowsEl.value,10)||16));}
     function renderDumpRecent(){
       if(!dumpRecent.length){spiLastHex.textContent='last dump bytes will appear here';return;}
       const cols=16;
@@ -928,6 +1012,23 @@
         out+=off+'  '+hx.padEnd(cols*3-1,' ')+'  '+asc+'\n';
       }
       spiLastHex.textContent=out;
+    }
+    function renderEmmcDumpRecent(){
+      if(!emmcDumpRecent.length){emmcDumpLastEl.textContent='last dump bytes will appear here';return;}
+      const cols=16;
+      const rows=emmcDumpRowsLimit();
+      const need=rows*cols;
+      const tail=emmcDumpRecent.length>need?emmcDumpRecent.slice(emmcDumpRecent.length-need):emmcDumpRecent.slice();
+      const base=Math.max(0,emmcDumpBytes-tail.length);
+      let out='';
+      for(let i=0;i<tail.length;i+=cols){
+        const chunk=tail.slice(i,i+cols);
+        const off=(base+i).toString(16).padStart(8,'0');
+        const hx=chunk.map(b=>b.toString(16).padStart(2,'0')).join(' ');
+        const asc=chunk.map(b=>(b>=32&&b<=126)?String.fromCharCode(b):'.').join('');
+        out+=off+'  '+hx.padEnd(cols*3-1,' ')+'  '+asc+'\n';
+      }
+      emmcDumpLastEl.textContent=out;
     }
     function updateDumpProgress(){
       const done=dumpCapturedBytes;
@@ -951,6 +1052,43 @@
       let eta='--';
       if(rate>1&&rem>0){const s=Math.round(rem/rate);const mm=Math.floor(s/60),ss=s%60;eta=mm+':'+String(ss).padStart(2,'0');}
       spiDumpRate.textContent='Rate: '+Math.round(rate)+' B/s | Avg: '+Math.round(avg)+' B/s | ETA: '+eta;
+    }
+    function updateEmmcDumpProgress(){
+      const done=Math.max(0,emmcDumpBytes);
+      const total=Math.max(0,emmcDumpExpectedBytes);
+      const pct=total>0?Math.min(100,Math.round((done*100)/total)):0;
+      emmcDumpStatEl.textContent='Progress: '+done+' / '+total+' bytes ('+pct+'%)';
+      const now=performance.now();
+      if(!emmcDumpStartMs){
+        emmcDumpStartMs=now;
+        emmcDumpLastRateMs=now;
+        emmcDumpLastRateBytes=done;
+        emmcDumpRateEma=0;
+      }
+      const dt=now-emmcDumpLastRateMs;
+      if(dt>=250){
+        const db=done-emmcDumpLastRateBytes;
+        const inst=(dt>0)?(db*1000/dt):0;
+        emmcDumpRateEma=emmcDumpRateEma?((emmcDumpRateEma*0.7)+(inst*0.3)):inst;
+        emmcDumpLastRateMs=now;
+        emmcDumpLastRateBytes=done;
+      }
+      const avg=(now>emmcDumpStartMs)?(done*1000/(now-emmcDumpStartMs)):0;
+      const rate=Math.max(emmcDumpRateEma,avg);
+      const rem=Math.max(0,total-done);
+      let eta='--';
+      if(rate>1&&rem>0){
+        const s=Math.round(rem/rate);
+        const mm=Math.floor(s/60),ss=s%60;
+        eta=mm+':'+String(ss).padStart(2,'0');
+      }
+      emmcDumpRateEl.textContent='Rate: '+Math.round(rate)+' B/s | Avg: '+Math.round(avg)+' B/s | ETA: '+eta;
+    }
+    function updateEmmcDumpFileMeta(){
+      const asm=emmcAssembleDump();
+      const size=asm?asm.total:0;
+      const st=emmcDumpStartStamp||'--';
+      emmcDumpFileMetaEl.textContent='emmc_dump_'+st+'.bin ('+size+' bytes)';
     }
     function dumpAppendBytes(arr){
       if(!arr||!arr.length)return;
@@ -1109,7 +1247,6 @@
           setChangedText(emmcOcrFlagsEl,decodeOcrFlags(m.ocr));
           setChangedText(emmcAddrModeEl,emmcAddressModeText(m.ocr));
           setChangedText(emmcCsdSumEl,decodeEmmcCsdSummary(m.csd||''));
-          setChangedText(emmcDumpReadyEl,emmcDumpReadinessText(m));
         }else{
           setChangedText(emmcIdLastEl,m.msg||'read failed');
           setChangedText(emmcIdMidEl,'--');
@@ -1118,7 +1255,6 @@
           setChangedText(emmcOcrFlagsEl,'--');
           setChangedText(emmcAddrModeEl,'--');
           setChangedText(emmcCsdSumEl,'--');
-          setChangedText(emmcDumpReadyEl,'--');
         }
         emmcLog('[emmc.id] '+JSON.stringify(m),m.ok?'ok':'dim');
         return true;
@@ -1155,6 +1291,46 @@
         emmcSt.textContent=(m.ready?'sd ready':'sd no-ready');
         emmcSt.className=m.ready?'ok':'dim';
         emmcLog(msg,m.ready?'ok':'dim');
+        return true;
+      }
+      if(m.type==='emmc.dump.status'){
+        const st=String(m.state||'status');
+        const total=parseNum(m.total_blocks,0);
+        const detail=String(m.detail||'');
+        if(total>0)emmcDumpExpectedBytes=Math.max(0,total)*512;
+        if(st==='running'&&detail==='dump started'){
+          emmcDumpChunks=[];
+          emmcDumpPieces.clear();
+          emmcDumpBytes=0;
+          emmcDumpRecent=[];
+          emmcDumpStartMs=0;
+          emmcDumpLastRateMs=0;
+          emmcDumpLastRateBytes=0;
+          emmcDumpRateEma=0;
+          emmcDumpLastEl.textContent='last dump bytes will appear here';
+          updateEmmcDumpFileMeta();
+          updateEmmcDumpProgress();
+        }
+        if(st==='complete'||st==='stopped'||st==='error'){
+          updateEmmcDumpProgress();
+          if(detail.length){
+            emmcDumpStatEl.textContent=emmcDumpStatEl.textContent+' - '+detail;
+          }
+        }
+        if(st==='running'&&detail.length&&detail!=='dump started'){
+          emmcDumpStatEl.textContent=emmcDumpStatEl.textContent+' - '+detail;
+        }
+        if(st==='running')emmcDumpActive=true;
+        if(st==='complete'||st==='stopped'||st==='error')emmcDumpActive=false;
+        emmcLog('[emmc.dump.status] '+JSON.stringify(m),st==='error'?'err':'dim');
+        return true;
+      }
+      if(m.type==='emmc.dump.chunk'){
+        const b=parseHexCompact(m.hex||'');
+        if(!b.length)return true;
+        const block=parseNum(m.block,0), off=parseNum(m.offset,0);
+        const abs=(block*512)+off;
+        appendEmmcDumpChunk(abs,b);
         return true;
       }
       return false;
@@ -1408,7 +1584,7 @@
           },1500);
         }
       };
-      ws.onmessage=(e)=>{if(typeof e.data==='string'){try{const m=JSON.parse(e.data);if(m.type==='hello'){aboutFw.textContent=m.fw||'--';aboutBuild.textContent=((m.build_date||'')+' '+(m.build_time||'')).trim()||'--';}else if(m.type==='pong'){}else if(m.type==='uart.config'){if(typeof m.tx_pin==='number'&&typeof m.rx_pin==='number')uartPins.textContent='UART0 pins: TX=GPIO'+m.tx_pin+', RX=GPIO'+m.rx_pin;appendTerm('\n[config '+JSON.stringify(m)+']\n','ok');}else if(m.type==='uart.rxmon'){setRxMonUi(m);}else if(m.type==='system.bootsel'){appendTerm('\n[system entering USB boot mode]\n','ok');spiLog('[system] entering USB boot mode','ok');dbgLog('[system] entering USB boot mode','ok');}else if(m.type==='system.debug'){if(typeof m.level==='number'){dbgLevel.value=String(m.level);dbgStatus.textContent='level '+m.level;}dbgLog('[debug cfg] '+JSON.stringify(m),'dim');}else if(m.type==='debug.log'){dbgLog('L'+(m.level||0)+' '+(m.scope||'sys')+': '+(m.msg||''));}else if(m.type==='error'){appendTerm('\n[error '+(m.msg||'unknown')+']\n','err');dbgLog('[error] '+(m.code||'')+' '+(m.msg||'unknown'),'err');if((m.code||'').startsWith('SPI_')){spiLog('[spi.error] '+(m.msg||m.code),'err');spiDump.textContent='dump: error ('+(m.msg||m.code)+')';}if((m.code||'').startsWith('EMMC_')){emmcLog('[emmc.error] '+(m.msg||m.code),'err');}}else if(m.type&&m.type.startsWith('spi.')){if(!handleSpiMessage(m))spiLog('[spi] '+JSON.stringify(m));}else if(m.type&&m.type.startsWith('emmc.')){if(!handleEmmcMessage(m))emmcLog('[emmc] '+JSON.stringify(m));}else{appendTerm('\n['+e.data+']\n');}}catch(_){appendTerm(e.data);}}else{const b=new Uint8Array(e.data);if(b.length>=2&&b[0]===WS_BIN_MAGIC){const ch=b[1];if(ch===WS_CH_UART){queueRx(b.slice(2));}else if(ch===WS_CH_SPI_DUMP_DATA&&b.length>=8){const off=le32(b,2);const cnt=le16(b,6);const p=b.slice(8,8+cnt);if((off||0)+p.length>dumpExpectedBytes)dumpExpectedBytes=(off||0)+p.length;dumpAppendBytes(p);spiDump.textContent='dump offset '+off+' data '+p.length+' bytes';}else if(ch===WS_CH_SPI_DUMP_FF&&b.length>=8){const off=le32(b,2);const cnt=le16(b,6);if((off||0)+cnt>dumpExpectedBytes)dumpExpectedBytes=(off||0)+cnt;dumpAppendBytes(new Uint8Array(cnt).fill(0xFF));spiDump.textContent='dump offset '+off+' ff-run '+cnt+' bytes';}}else{queueRx(b);}}};
+      ws.onmessage=(e)=>{if(typeof e.data==='string'){try{const m=JSON.parse(e.data);if(m.type==='hello'){aboutFw.textContent=m.fw||'--';aboutBuild.textContent=((m.build_date||'')+' '+(m.build_time||'')).trim()||'--';}else if(m.type==='pong'){}else if(m.type==='uart.config'){if(typeof m.tx_pin==='number'&&typeof m.rx_pin==='number')uartPins.textContent='UART0 pins: TX=GPIO'+m.tx_pin+', RX=GPIO'+m.rx_pin;appendTerm('\n[config '+JSON.stringify(m)+']\n','ok');}else if(m.type==='uart.rxmon'){setRxMonUi(m);}else if(m.type==='system.bootsel'){appendTerm('\n[system entering USB boot mode]\n','ok');spiLog('[system] entering USB boot mode','ok');dbgLog('[system] entering USB boot mode','ok');}else if(m.type==='system.debug'){if(typeof m.level==='number'){dbgLevel.value=String(m.level);dbgStatus.textContent='level '+m.level;}dbgLog('[debug cfg] '+JSON.stringify(m),'dim');}else if(m.type==='debug.log'){dbgLog('L'+(m.level||0)+' '+(m.scope||'sys')+': '+(m.msg||''));}else if(m.type==='error'){appendTerm('\n[error '+(m.msg||'unknown')+']\n','err');dbgLog('[error] '+(m.code||'')+' '+(m.msg||'unknown'),'err');if((m.code||'').startsWith('SPI_')){spiLog('[spi.error] '+(m.msg||m.code),'err');spiDump.textContent='dump: error ('+(m.msg||m.code)+')';}if((m.code||'').startsWith('EMMC_')){emmcLog('[emmc.error] '+(m.msg||m.code),'err');}}else if(m.type&&m.type.startsWith('spi.')){if(!handleSpiMessage(m))spiLog('[spi] '+JSON.stringify(m));}else if(m.type&&m.type.startsWith('emmc.')){if(!handleEmmcMessage(m))emmcLog('[emmc] '+JSON.stringify(m));}else{appendTerm('\n['+e.data+']\n');}}catch(_){appendTerm(e.data);}}else{const b=new Uint8Array(e.data);if(b.length>=2&&b[0]===WS_BIN_MAGIC){const ch=b[1];if(ch===WS_CH_UART){queueRx(b.slice(2));}else if(ch===WS_CH_SPI_DUMP_DATA&&b.length>=8){const off=le32(b,2);const cnt=le16(b,6);const p=b.slice(8,8+cnt);if((off||0)+p.length>dumpExpectedBytes)dumpExpectedBytes=(off||0)+p.length;dumpAppendBytes(p);spiDump.textContent='dump offset '+off+' data '+p.length+' bytes';}else if(ch===WS_CH_SPI_DUMP_FF&&b.length>=8){const off=le32(b,2);const cnt=le16(b,6);if((off||0)+cnt>dumpExpectedBytes)dumpExpectedBytes=(off||0)+cnt;dumpAppendBytes(new Uint8Array(cnt).fill(0xFF));spiDump.textContent='dump offset '+off+' ff-run '+cnt+' bytes';}else if(ch===WS_CH_EMMC_DUMP_DATA&&b.length>=8){const off=le32(b,2);const cnt=le16(b,6);const p=b.slice(8,8+cnt);appendEmmcDumpChunk(off,p);} }else{queueRx(b);}}};
     }
 
     function openWs(){
@@ -1468,11 +1644,53 @@
     emmcCmdTestBtn.onclick=()=>{emmcSt.textContent='running cmd test...';emmcSt.className='dim';emmcSend('emmc.cmd_test',{cycles:6});};
     emmcCmd1TestBtn.onclick=()=>{emmcSt.textContent='running cmd1 test...';emmcSt.className='dim';emmcSend('emmc.cmd1_test',{retries:24,arg:0x40FF8000});};
     emmcSdTestBtn.onclick=()=>{emmcSt.textContent='running sd test...';emmcSt.className='dim';emmcSend('emmc.sd_test',{retries:32,arg:0x40FF8000});};
-    emmcIdStartBtn.onclick=()=>{emmcIdPollActive=true;emmcIdCount=0;emmcIdCountEl.textContent='0';setEmmcLive(true);setChangedText(emmcIdLastEl,'waiting...');setChangedText(emmcIdMidEl,'--');setChangedText(emmcIdPnmEl,'--');setChangedText(emmcIdPsnEl,'--');setChangedText(emmcOcrFlagsEl,'--');setChangedText(emmcAddrModeEl,'--');setChangedText(emmcCsdSumEl,'--');setChangedText(emmcDumpReadyEl,'--');setChangedText(emmcIdWindowEl,'--');setChangedText(emmcIdTrEl,'--');emmcSend('emmc.idpoll.start',{interval_ms:parseNum(emmcIdInt.value,500),speed_hz:parseNum(emmcSpeed.value,400000),monitor_between:emmcIdMon.checked});};
-    emmcIdStopBtn.onclick=()=>{emmcIdPollActive=false;emmcSend('emmc.idpoll.stop');setEmmcLive(false);setChangedText(emmcIdWindowEl,'--');setChangedText(emmcIdTrEl,'--');setChangedText(emmcDumpReadyEl,'--');resetEmmcPinUi();};
+    emmcIdStartBtn.onclick=()=>{emmcIdPollActive=true;emmcIdCount=0;emmcIdCountEl.textContent='0';setEmmcLive(true);setChangedText(emmcIdLastEl,'waiting...');setChangedText(emmcIdMidEl,'--');setChangedText(emmcIdPnmEl,'--');setChangedText(emmcIdPsnEl,'--');setChangedText(emmcOcrFlagsEl,'--');setChangedText(emmcAddrModeEl,'--');setChangedText(emmcCsdSumEl,'--');setChangedText(emmcIdWindowEl,'--');setChangedText(emmcIdTrEl,'--');emmcSend('emmc.idpoll.start',{interval_ms:parseNum(emmcIdInt.value,500),speed_hz:parseNum(emmcSpeed.value,400000),monitor_between:emmcIdMon.checked});};
+    emmcIdStopBtn.onclick=()=>{emmcIdPollActive=false;emmcSend('emmc.idpoll.stop');setEmmcLive(false);setChangedText(emmcIdWindowEl,'--');setChangedText(emmcIdTrEl,'--');resetEmmcPinUi();};
+    emmcDumpStartBtn.onclick=()=>{
+      let startTxt=String(emmcDumpStartEl.value||'').trim().toLowerCase();
+      const start=startTxt.startsWith('0x')?parseHexU32(startTxt,0):Math.max(0,parseNum(startTxt,0));
+      const blocks=Math.max(1,parseNum(emmcDumpBlocksEl.value,16));
+      const chunk=Math.max(16,Math.min(256,parseNum(emmcDumpChunkEl.value,256)));
+      const verifyRetries=Math.max(0,Math.min(8,parseNum(emmcDumpVRetryEl.value,1)));
+      const autoRetries=Math.max(0,Math.min(32,parseNum(emmcDumpARetryEl.value,4)));
+      emmcDumpActive=true;
+      emmcDumpChunks=[];
+      emmcDumpPieces.clear();
+      emmcDumpBytes=0;
+      emmcDumpExpectedBytes=blocks*512;
+      emmcDumpStartStamp=stamp();
+      emmcDumpStartMs=0;
+      emmcDumpLastRateMs=0;
+      emmcDumpLastRateBytes=0;
+      emmcDumpRateEma=0;
+      updateEmmcDumpFileMeta();
+      updateEmmcDumpProgress();
+      emmcSend('emmc.dump.start',{
+        start_lba:start>>>0,
+        block_count:blocks>>>0,
+        chunk_bytes:chunk>>>0,
+        double_read:!!emmcDumpDblEl.checked,
+        verify_retries:verifyRetries>>>0,
+        auto_retries:autoRetries>>>0
+      });
+    };
+    emmcDumpStopBtn.onclick=()=>{
+      emmcSend('emmc.dump.stop');
+      emmcDumpActive=false;
+      emmcDumpStatEl.textContent='Progress: '+emmcDumpBytes+' / '+emmcDumpExpectedBytes+' bytes (stopping...)';
+    };
+    emmcDumpDlBtn.onclick=()=>{
+      const asm=emmcAssembleDump();
+      if(!asm){emmcLog('[emmc.dump] nothing captured yet','dim');return;}
+      const st=emmcDumpStartStamp||stamp();
+      saveBlob('emmc_dump_'+st+'.bin','application/octet-stream',[asm.bytes]);
+      if(asm.missing>0) emmcLog('[emmc.dump] downloaded '+asm.total+' bytes with '+asm.missing+' missing bytes (filled as 00)','err');
+      else emmcLog('[emmc.dump] downloaded '+asm.total+' bytes complete','ok');
+    };
     sfdpReadBtn.onclick=()=>{spiSend('spi.sfdp.read',{length:parseNum(sfdpLen.value,256)});};
     spiStatusReadBtn.onclick=()=>{spiSend('spi.status.read');};
     spiDumpRows.addEventListener('input',renderDumpRecent);
+    emmcDumpRowsEl.addEventListener('input',()=>{renderEmmcDumpRecent();layoutEmmcLog();});
     spiDumpDbl.addEventListener('change',renderVerifyStatus);
     spiDumpRetry.addEventListener('input',()=>{verifyMaxRetriesCfg=parseNum(spiDumpRetry.value,0);renderVerifyStatus();});
     spiDumpRetry.addEventListener('change',()=>{verifyMaxRetriesCfg=parseNum(spiDumpRetry.value,0);renderVerifyStatus();});
@@ -1526,6 +1744,8 @@
     buildRawRows();
     resetPinUi();
     resetEmmcPinUi();
+    renderEmmcDumpRecent();
+    updateEmmcDumpFileMeta();
     resetSnifferUi();
     updateReadRanges();
     resetVerifyStatus();
