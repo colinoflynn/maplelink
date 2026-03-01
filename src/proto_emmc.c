@@ -8,6 +8,8 @@
 #include "app_transport.h"
 #include "hardware/clocks.h"
 #include "hardware/gpio.h"
+#include "hardware/pio.h"
+#include "emmc_dat0_rx.pio.h"
 #include "pico/stdlib.h"
 
 #define EMMC_CMD_PIN 10
@@ -15,7 +17,7 @@
 #define EMMC_DAT0_PIN 12
 
 #define EMMC_MIN_SPEED_HZ 100000u
-#define EMMC_MAX_SPEED_HZ 2000000u
+#define EMMC_MAX_SPEED_HZ 4000000u
 #define EMMC_MIN_IDPOLL_MS 100u
 #define EMMC_MAX_IDPOLL_MS 5000u
 #define EMMC_CMD_TIMEOUT_BITS 512u
@@ -38,6 +40,12 @@
 #define EMMC_DUMP_TX_FAIL_LIMIT 40u
 #define EMMC_DUMP_HEARTBEAT_MS 1000u
 #define EMMC_DUMP_STALL_TIMEOUT_MS 4000u
+#define EMMC_PIO_RX_BYTES (EMMC_DUMP_BLOCK_SIZE + 2u)
+#define EMMC_RESELECT_EVERY_BLOCKS 16u
+#define EMMC_CMD17_R1_EXTRA_TRIES 3u
+#define EMMC_DUMP_MIN_SPEED_HZ 100000u
+#define EMMC_READ_BLOCK_WATCHDOG_MS 6000u
+#define EMMC_FULL_REPREPARE_MAX 2u
 #define WS_BIN_MAGIC 0xB0u
 #define WS_CH_EMMC_DUMP_DATA 0x04u
 
@@ -72,6 +80,7 @@ typedef struct {
   uint32_t dump_done_blocks;
   uint16_t dump_chunk_bytes;
   bool dump_double_read;
+  bool dump_use_pio;
   uint8_t dump_verify_retries;
   uint8_t dump_auto_retries;
   uint8_t dump_block_retry_count;
@@ -103,6 +112,7 @@ static emmc_state_t g_emmc = {
     .dump_done_blocks = 0u,
     .dump_chunk_bytes = EMMC_DUMP_CHUNK_BYTES,
     .dump_double_read = false,
+    .dump_use_pio = true,
     .dump_verify_retries = EMMC_DUMP_VERIFY_RETRIES_DEFAULT,
     .dump_auto_retries = EMMC_DUMP_AUTO_RETRIES_DEFAULT,
     .dump_block_retry_count = 0u,
@@ -115,6 +125,12 @@ static emmc_state_t g_emmc = {
 };
 
 static uint32_t now_ms(void) { return to_ms_since_boot(get_absolute_time()); }
+static void emmc_dbg(uint8_t level, const char *msg) { (void)app_debug_log(level, "emmc", msg); }
+static char g_emmc_data_err[96];
+static void emmc_set_data_err(const char *msg) {
+  if (!msg) msg = "";
+  snprintf(g_emmc_data_err, sizeof(g_emmc_data_err), "%s", msg);
+}
 static void wr_le16(uint8_t *p, uint16_t v) { p[0] = (uint8_t)(v & 0xFFu); p[1] = (uint8_t)((v >> 8) & 0xFFu); }
 static void wr_le32(uint8_t *p, uint32_t v) {
   p[0] = (uint8_t)(v & 0xFFu);
@@ -150,6 +166,7 @@ static bool json_extract_u32(const char *json, const char *key, uint32_t *out) {
 
 static inline void emmc_delay_half(void) {
   if (g_emmc.half_period_cycles > 0u) busy_wait_at_least_cycles(g_emmc.half_period_cycles);
+  tight_loop_contents();
 }
 
 static void emmc_update_timing(void) {
@@ -317,6 +334,36 @@ static uint32_t bitbuf_get_u32(const uint8_t *buf, uint16_t start_bit, uint8_t c
   return v;
 }
 
+static uint32_t rd_le32(const uint8_t *p) {
+  return (uint32_t)p[0] | ((uint32_t)p[1] << 8u) | ((uint32_t)p[2] << 16u) | ((uint32_t)p[3] << 24u);
+}
+
+static uint32_t rd_le24(const uint8_t *p) {
+  return (uint32_t)p[0] | ((uint32_t)p[1] << 8u) | ((uint32_t)p[2] << 16u);
+}
+
+static uint8_t bitrev8(uint8_t x) {
+  x = (uint8_t)(((x & 0xF0u) >> 4u) | ((x & 0x0Fu) << 4u));
+  x = (uint8_t)(((x & 0xCCu) >> 2u) | ((x & 0x33u) << 2u));
+  x = (uint8_t)(((x & 0xAAu) >> 1u) | ((x & 0x55u) << 1u));
+  return x;
+}
+
+static uint16_t crc16_ccitt_bytes(const uint8_t *data, size_t len) {
+  uint16_t crc = 0u;
+  size_t i;
+  if (!data) return 0u;
+  for (i = 0; i < len; i++) {
+    uint8_t bit;
+    crc ^= (uint16_t)((uint16_t)data[i] << 8u);
+    for (bit = 0; bit < 8u; bit++) {
+      if (crc & 0x8000u) crc = (uint16_t)((crc << 1u) ^ 0x1021u);
+      else crc <<= 1u;
+    }
+  }
+  return crc;
+}
+
 static bool emmc_read_response_bits(uint16_t total_bits, uint8_t *out, size_t out_size) {
   uint16_t start_scan;
   uint16_t bit_pos = 0;
@@ -401,6 +448,8 @@ static void r2_extract_payload_120(const uint8_t *r2_136, uint8_t out15[15]) {
 }
 
 static void snapshot_levels(void);
+static bool emmc_prepare_card_for_data(uint16_t *out_rca, bool *out_hc, char *msg, size_t msg_len);
+static bool emmc_resync_transfer(uint16_t rca, bool hc_addressing);
 
 static bool emmc_try_read_ids(emmc_id_data_t *out) {
   uint8_t r1[6];
@@ -781,9 +830,12 @@ static bool emmc_wait_dat0_start(void) {
   return false;
 }
 
-static bool emmc_read_data_block_512(uint8_t out[EMMC_DUMP_BLOCK_SIZE]) {
+static bool emmc_read_data_block_512_sw(uint8_t out[EMMC_DUMP_BLOCK_SIZE]) {
   uint32_t i;
-  if (!emmc_wait_dat0_start()) return false;
+  if (!emmc_wait_dat0_start()) {
+    emmc_set_data_err("SW wait DAT0 start timeout");
+    return false;
+  }
   for (i = 0; i < EMMC_DUMP_BLOCK_SIZE; i++) {
     uint8_t b = 0u;
     uint8_t bit;
@@ -794,7 +846,286 @@ static bool emmc_read_data_block_512(uint8_t out[EMMC_DUMP_BLOCK_SIZE]) {
   }
   // Consume CRC16 + end bit.
   for (i = 0; i < 17u; i++) (void)emmc_clock_bit_in_dat0();
+  emmc_set_data_err("ok");
   return true;
+}
+
+static bool emmc_read_data_block_512(uint8_t out[EMMC_DUMP_BLOCK_SIZE]) {
+  static bool pio_init_done = false;
+  static bool pio_available = false;
+  static PIO pio = pio0;
+  static uint sm = 0u;
+  static uint pio_off = 0u;
+  static uint8_t raw[EMMC_PIO_RX_BYTES];
+  static uint8_t rev_data[EMMC_DUMP_BLOCK_SIZE];
+  uint16_t crc_calc;
+  uint16_t crc_rx;
+  uint16_t crc_rx_rev;
+  uint16_t crc_calc_rev = 0u;
+  uint32_t i;
+  bool got = false;
+  char dmsg[160];
+
+  if (!out) return false;
+  if (!g_emmc.dump_use_pio) return false;
+  // Keep start-bit acquisition in software (known-stable), then let PIO capture fixed-length payload.
+  if (app_debug_level() >= 3u) emmc_dbg(3, "pio: waiting DAT0 start bit");
+  if (!emmc_wait_dat0_start()) {
+    emmc_set_data_err("PIO wait DAT0 start timeout");
+    if (app_debug_level() >= 2u) emmc_dbg(2, "pio: DAT0 start bit timeout");
+    return false;
+  }
+
+  if (!pio_init_done) {
+    pio_init_done = true;
+    // Prefer pio1 first to avoid contention with stacks that commonly use pio0.
+    if (pio_can_add_program(pio1, &emmc_dat0_rx_program)) pio = pio1;
+    else if (pio_can_add_program(pio0, &emmc_dat0_rx_program)) pio = pio0;
+    else pio = NULL;
+    if (pio) {
+      sm = pio_claim_unused_sm(pio, false);
+      if (sm != (uint)-1) {
+        pio_off = pio_add_program(pio, &emmc_dat0_rx_program);
+        pio_available = true;
+        if (app_debug_level() >= 2u) {
+          snprintf(dmsg, sizeof(dmsg), "pio: init ok pio=%s sm=%u off=%u",
+                   (pio == pio0) ? "pio0" : "pio1", (unsigned)sm, (unsigned)pio_off);
+          emmc_dbg(2, dmsg);
+        }
+      }
+    }
+    if (!pio_available && app_debug_level() >= 1u) emmc_dbg(1, "pio: init failed, unavailable");
+    if (!pio_available) emmc_set_data_err("PIO unavailable");
+  }
+
+  if (pio_available) {
+    pio_sm_config c = emmc_dat0_rx_program_get_default_config(pio_off);
+    // PIO loop is 3 instructions/bit; tune divider so resulting bit clock matches target.
+    float clkdiv = (float)clock_get_hz(clk_sys) / ((float)g_emmc.speed_hz * 3.0f);
+    uint32_t timeout_us;
+    uint64_t t_start_us;
+    uint64_t tx_wait_start_us;
+    uint32_t clkdiv_x1000;
+
+    if (clkdiv < 1.0f) clkdiv = 1.0f;
+    sm_config_set_in_pins(&c, EMMC_DAT0_PIN);
+    sm_config_set_sideset_pins(&c, EMMC_CLK_PIN);
+    sm_config_set_in_shift(&c, false, true, 8);
+    // Keep independent TX/RX FIFOs: TX is required for the 'pull' bit-count value.
+    sm_config_set_fifo_join(&c, PIO_FIFO_JOIN_NONE);
+    sm_config_set_clkdiv(&c, clkdiv);
+
+    pio_gpio_init(pio, EMMC_CLK_PIN);
+    pio_gpio_init(pio, EMMC_DAT0_PIN);
+    pio_sm_set_consecutive_pindirs(pio, sm, EMMC_CLK_PIN, 1u, true);
+    pio_sm_set_consecutive_pindirs(pio, sm, EMMC_DAT0_PIN, 1u, false);
+    pio_sm_init(pio, sm, pio_off, &c);
+    pio_sm_set_enabled(pio, sm, false);
+    pio_sm_clear_fifos(pio, sm);
+    pio_sm_restart(pio, sm);
+    // Avoid blocking TX FIFO write; guard with timeout.
+    tx_wait_start_us = time_us_64();
+    while (pio_sm_is_tx_fifo_full(pio, sm)) {
+      if ((time_us_64() - tx_wait_start_us) > 2000u) {
+        emmc_set_data_err("PIO tx fifo full timeout");
+        if (app_debug_level() >= 1u) emmc_dbg(1, "pio: tx fifo full timeout");
+        return false;
+      }
+      tight_loop_contents();
+    }
+    pio_sm_put(pio, sm, (EMMC_PIO_RX_BYTES * 8u) - 1u);
+
+    pio_sm_set_enabled(pio, sm, true);
+    timeout_us = (uint32_t)(((uint64_t)(EMMC_PIO_RX_BYTES * 8u + 256u) * 1000000ull) / (uint64_t)g_emmc.speed_hz);
+    if (timeout_us < 5000u) timeout_us = 5000u;
+    if (app_debug_level() >= 3u) {
+      clkdiv_x1000 = (uint32_t)(clkdiv * 1000.0f);
+      snprintf(dmsg, sizeof(dmsg), "pio: start clkdiv_x1000=%lu timeout_us=%lu",
+               (unsigned long)clkdiv_x1000, (unsigned long)timeout_us);
+      emmc_dbg(3, dmsg);
+    }
+    t_start_us = time_us_64();
+    for (i = 0; i < EMMC_PIO_RX_BYTES; i++) {
+      while (pio_sm_is_rx_fifo_empty(pio, sm)) {
+        if ((time_us_64() - t_start_us) > timeout_us) {
+          pio_sm_set_enabled(pio, sm, false);
+          pio_sm_clear_fifos(pio, sm);
+          pio_sm_restart(pio, sm);
+          got = false;
+          emmc_set_data_err("PIO rx timeout");
+          if (app_debug_level() >= 1u) {
+            snprintf(dmsg, sizeof(dmsg), "pio: rx timeout at byte %lu/%u",
+                     (unsigned long)i, (unsigned)EMMC_PIO_RX_BYTES);
+            emmc_dbg(1, dmsg);
+          }
+          goto pio_restore;
+        }
+        tight_loop_contents();
+      }
+      // Non-blocking pop after explicit empty check: avoids any chance of wedging
+      // on blocking FIFO helpers if state gets out of sync.
+      raw[i] = (uint8_t)pio->rxf[sm];
+      if ((i & 31u) == 0u) tight_loop_contents();
+    }
+    pio_sm_set_enabled(pio, sm, false);
+    pio_sm_clear_fifos(pio, sm);
+    pio_sm_restart(pio, sm);
+    got = true;
+
+pio_restore:
+    gpio_set_function(EMMC_CLK_PIN, GPIO_FUNC_SIO);
+    gpio_set_dir(EMMC_CLK_PIN, GPIO_OUT);
+    gpio_put(EMMC_CLK_PIN, 1u);
+    gpio_set_function(EMMC_DAT0_PIN, GPIO_FUNC_SIO);
+    pin_input(EMMC_DAT0_PIN);
+
+    if (got) {
+      crc_calc = crc16_ccitt_bytes(raw, EMMC_DUMP_BLOCK_SIZE);
+      crc_rx = (uint16_t)(((uint16_t)raw[EMMC_DUMP_BLOCK_SIZE] << 8u) | raw[EMMC_DUMP_BLOCK_SIZE + 1u]);
+      if (crc_calc != crc_rx) {
+        for (i = 0; i < EMMC_DUMP_BLOCK_SIZE; i++) rev_data[i] = bitrev8(raw[i]);
+        crc_calc_rev = crc16_ccitt_bytes(rev_data, EMMC_DUMP_BLOCK_SIZE);
+        crc_rx_rev = (uint16_t)(((uint16_t)bitrev8(raw[EMMC_DUMP_BLOCK_SIZE]) << 8u) |
+                                bitrev8(raw[EMMC_DUMP_BLOCK_SIZE + 1u]));
+        if (crc_calc_rev == crc_rx_rev) {
+          if (app_debug_level() >= 2u) {
+            snprintf(dmsg, sizeof(dmsg), "pio: crc ok (bit-reversed), crc=%04X", (unsigned)crc_calc_rev);
+            emmc_dbg(2, dmsg);
+          }
+          memcpy(out, rev_data, EMMC_DUMP_BLOCK_SIZE);
+          (void)emmc_clock_bit_in_dat0();  // consume end bit
+          emmc_set_data_err("ok");
+          return true;
+        }
+        if (app_debug_level() >= 1u) {
+          snprintf(dmsg, sizeof(dmsg), "pio: crc mismatch raw=%04X rx=%04X rev=%04X rx_rev=%04X",
+                   (unsigned)crc_calc, (unsigned)crc_rx, (unsigned)crc_calc_rev, (unsigned)crc_rx_rev);
+          emmc_dbg(1, dmsg);
+        }
+      } else {
+        if (app_debug_level() >= 2u) {
+          snprintf(dmsg, sizeof(dmsg), "pio: crc ok raw=%04X", (unsigned)crc_calc);
+          emmc_dbg(2, dmsg);
+        }
+        memcpy(out, raw, EMMC_DUMP_BLOCK_SIZE);
+        (void)emmc_clock_bit_in_dat0();  // consume end bit
+        emmc_set_data_err("ok");
+        return true;
+      }
+      // If CRC check did not match either orientation, fall back to software path.
+      emmc_set_data_err("PIO CRC mismatch");
+      pio_sm_set_enabled(pio, sm, false);
+      pio_sm_clear_fifos(pio, sm);
+      pio_sm_restart(pio, sm);
+    }
+  }
+  emmc_set_data_err("PIO block read failed");
+  if (app_debug_level() >= 2u) emmc_dbg(2, "pio: block read failed");
+  return false;
+}
+
+static bool emmc_read_ext_csd(uint8_t out[EMMC_DUMP_BLOCK_SIZE], char *msg, size_t msg_len) {
+  uint16_t rca = 1u;
+  bool hc = false;
+  uint8_t r1[6];
+  uint32_t i;
+  uint32_t attempt;
+  bool cmd8_ok;
+  bool data_ok;
+  if (!out) return false;
+  if (!emmc_prepare_card_for_data(&rca, &hc, msg, msg_len)) return false;
+
+  for (attempt = 0; attempt < EMMC_DUMP_READ_RETRIES; attempt++) {
+    cmd8_ok = false;
+    data_ok = false;
+
+    for (i = 0; i < EMMC_CMDX_RETRIES; i++) {
+      if (emmc_send_cmd_raw(8u, 0u, 48u, r1, sizeof(r1))) {
+        cmd8_ok = true;
+        break;
+      }
+      emmc_send_idle_clocks(8u);
+    }
+    if (cmd8_ok) {
+      // EXT_CSD path: use conservative software receiver for maximum robustness.
+      data_ok = emmc_read_data_block_512_sw(out);
+      if (data_ok) return true;
+      if (msg && msg_len > 0u) snprintf(msg, msg_len, "EXT_CSD data timeout");
+    } else if (msg && msg_len > 0u) {
+      snprintf(msg, msg_len, "CMD8 (EXT_CSD) no response");
+    }
+
+    // Recovery path: re-select transfer state and retry.
+    (void)emmc_send_cmd_raw(7u, ((uint32_t)rca) << 16u, 48u, r1, sizeof(r1));
+    if (!hc) (void)emmc_send_cmd_raw(16u, EMMC_DUMP_BLOCK_SIZE, 48u, r1, sizeof(r1));
+    emmc_send_idle_clocks(16u);
+  }
+  return false;
+}
+
+static bool send_layout_result(void) {
+  uint8_t ext[EMMC_DUMP_BLOCK_SIZE];
+  char msg[96];
+  char out[1152];
+  uint32_t sec_count;
+  uint64_t user_bytes;
+  uint32_t boot_size_mult;
+  uint32_t boot_bytes_each;
+  uint32_t part_cfg;
+  uint32_t part_sup;
+  uint32_t erase_grp;
+  uint32_t wp_grp;
+  uint64_t unit_bytes;
+  uint32_t gp1_mul;
+  uint32_t gp2_mul;
+  uint32_t gp3_mul;
+  uint32_t gp4_mul;
+  uint64_t gp1_bytes;
+  uint64_t gp2_bytes;
+  uint64_t gp3_bytes;
+  uint64_t gp4_bytes;
+  bool ok = emmc_read_ext_csd(ext, msg, sizeof(msg));
+  if (!ok) {
+    snprintf(out, sizeof(out),
+             "{\"type\":\"emmc.layout.result\",\"ok\":false,\"msg\":\"%s\"}",
+             msg[0] ? msg : "EXT_CSD read failed");
+    return app_send_text(out);
+  }
+
+  sec_count = rd_le32(&ext[212]);
+  user_bytes = ((uint64_t)sec_count) * 512ull;
+  boot_size_mult = ext[226];
+  boot_bytes_each = boot_size_mult * (128u * 1024u);
+  part_cfg = ext[179];
+  part_sup = ext[160];
+  erase_grp = ext[224];
+  wp_grp = ext[221];
+  unit_bytes = ((uint64_t)erase_grp) * ((uint64_t)wp_grp) * 512ull * 1024ull;
+  gp1_mul = rd_le24(&ext[143]);
+  gp2_mul = rd_le24(&ext[146]);
+  gp3_mul = rd_le24(&ext[149]);
+  gp4_mul = rd_le24(&ext[152]);
+  gp1_bytes = ((uint64_t)gp1_mul) * unit_bytes;
+  gp2_bytes = ((uint64_t)gp2_mul) * unit_bytes;
+  gp3_bytes = ((uint64_t)gp3_mul) * unit_bytes;
+  gp4_bytes = ((uint64_t)gp4_mul) * unit_bytes;
+
+  snprintf(out, sizeof(out),
+           "{\"type\":\"emmc.layout.result\",\"ok\":true,"
+           "\"sec_count\":%lu,\"user_bytes\":%llu,"
+           "\"boot_size_mult\":%lu,\"boot_bytes_each\":%lu,"
+           "\"partition_config\":%lu,\"partitioning_support\":%lu,"
+           "\"hc_erase_grp_size\":%lu,\"hc_wp_grp_size\":%lu,\"gp_unit_bytes\":%llu,"
+           "\"gp1_mult\":%lu,\"gp2_mult\":%lu,\"gp3_mult\":%lu,\"gp4_mult\":%lu,"
+           "\"gp1_bytes\":%llu,\"gp2_bytes\":%llu,\"gp3_bytes\":%llu,\"gp4_bytes\":%llu}",
+           (unsigned long)sec_count, (unsigned long long)user_bytes,
+           (unsigned long)boot_size_mult, (unsigned long)boot_bytes_each,
+           (unsigned long)part_cfg, (unsigned long)part_sup,
+           (unsigned long)erase_grp, (unsigned long)wp_grp, (unsigned long long)unit_bytes,
+           (unsigned long)gp1_mul, (unsigned long)gp2_mul, (unsigned long)gp3_mul, (unsigned long)gp4_mul,
+           (unsigned long long)gp1_bytes, (unsigned long long)gp2_bytes,
+           (unsigned long long)gp3_bytes, (unsigned long long)gp4_bytes);
+  return app_send_text(out);
 }
 
 static bool emmc_prepare_card_for_data(uint16_t *out_rca, bool *out_hc, char *msg, size_t msg_len) {
@@ -844,20 +1175,126 @@ static bool emmc_prepare_card_for_data(uint16_t *out_rca, bool *out_hc, char *ms
 static bool emmc_read_block(uint32_t lba, bool hc_addressing, uint8_t out[EMMC_DUMP_BLOCK_SIZE], char *msg, size_t msg_len) {
   uint8_t r1[6];
   uint16_t rca = g_emmc.dump_rca ? g_emmc.dump_rca : 1u;
-  uint32_t arg = hc_addressing ? lba : (lba * EMMC_DUMP_BLOCK_SIZE);
+  bool local_hc = hc_addressing;
+  uint32_t arg = local_hc ? lba : (lba * EMMC_DUMP_BLOCK_SIZE);
   uint32_t attempt;
+  uint32_t cmd_no_r1_count = 0u;
+  uint32_t orig_speed = g_emmc.speed_hz;
+  bool speed_floor_forced = false;
+  bool speed_reduced = false;
+  uint32_t full_reprepare_count = 0u;
+  uint32_t block_start_ms = now_ms();
+  bool cmd_ok;
+  bool data_ok;
+  bool resync_ok;
+  uint32_t cmd_try;
+  emmc_set_data_err("");
+  if (orig_speed < EMMC_DUMP_MIN_SPEED_HZ) {
+    g_emmc.speed_hz = EMMC_DUMP_MIN_SPEED_HZ;
+    emmc_update_timing();
+    speed_floor_forced = true;
+    if (app_debug_level() >= 1u) emmc_dbg(1, "cmd: forcing minimum dump speed 100k");
+  }
   for (attempt = 0; attempt < EMMC_DUMP_READ_RETRIES; attempt++) {
-    if (emmc_send_cmd_raw(17u, arg, 48u, r1, sizeof(r1)) && emmc_read_data_block_512(out)) return true;
-    // Re-select transfer state and retry.
-    (void)emmc_send_cmd_raw(7u, ((uint32_t)rca) << 16u, 48u, r1, sizeof(r1));
-    if (!hc_addressing) (void)emmc_send_cmd_raw(16u, EMMC_DUMP_BLOCK_SIZE, 48u, r1, sizeof(r1));
-    emmc_send_idle_clocks(8u);
+    if ((now_ms() - block_start_ms) > EMMC_READ_BLOCK_WATCHDOG_MS) {
+      emmc_set_data_err("block read watchdog timeout");
+      if (app_debug_level() >= 1u) emmc_dbg(1, "cmd: block read watchdog timeout");
+      break;
+    }
+    arg = local_hc ? lba : (lba * EMMC_DUMP_BLOCK_SIZE);
+    cmd_ok = false;
+    for (cmd_try = 0; cmd_try < EMMC_CMD17_R1_EXTRA_TRIES; cmd_try++) {
+      if (emmc_send_cmd_raw(17u, arg, 48u, r1, sizeof(r1))) {
+        cmd_ok = true;
+        break;
+      }
+      emmc_send_idle_clocks(4u);
+      tight_loop_contents();
+    }
+    data_ok = false;
+    if (cmd_ok) data_ok = emmc_read_data_block_512(out);
+    if (cmd_ok && data_ok) {
+      if (speed_reduced || speed_floor_forced) {
+        g_emmc.speed_hz = orig_speed;
+        emmc_update_timing();
+      }
+      return true;
+    }
+
+    // Adaptive PIO retry: if early data-phase failures occur at high speed, drop to 400 kHz.
+    if (g_emmc.dump_use_pio && cmd_ok && !data_ok && !speed_reduced && orig_speed > 400000u && attempt >= 1u) {
+      g_emmc.speed_hz = 400000u;
+      emmc_update_timing();
+      speed_reduced = true;
+      if (app_debug_level() >= 1u) emmc_dbg(1, "pio: reducing dump speed to 400k for recovery");
+    }
+
+    if (!cmd_ok) {
+      uint16_t new_rca;
+      bool new_hc;
+      char rec_msg[96];
+      cmd_no_r1_count++;
+      emmc_set_data_err("no R1 response");
+      if (cmd_no_r1_count >= 2u) {
+        if (full_reprepare_count < EMMC_FULL_REPREPARE_MAX) {
+          full_reprepare_count++;
+          emmc_bus_prepare();
+          emmc_send_idle_clocks(32u);
+          if (emmc_prepare_card_for_data(&new_rca, &new_hc, rec_msg, sizeof(rec_msg))) {
+            g_emmc.dump_rca = new_rca;
+            g_emmc.dump_hc_addressing = new_hc;
+            rca = new_rca;
+            local_hc = new_hc;
+            cmd_no_r1_count = 0u;
+            if (app_debug_level() >= 1u) emmc_dbg(1, "cmd: full re-prepare after repeated no-R1");
+          } else if (app_debug_level() >= 1u) {
+            emmc_dbg(1, "cmd: re-prepare failed after repeated no-R1");
+          }
+        } else if (app_debug_level() >= 1u) {
+          emmc_dbg(1, "cmd: re-prepare limit reached for block");
+        }
+      }
+    } else {
+      cmd_no_r1_count = 0u;
+    }
+
+    // Re-sync transfer state and retry.
+    resync_ok = emmc_resync_transfer(rca, local_hc);
+    if (!resync_ok) {
+      emmc_set_data_err("resync failed (no R1 response)");
+      if (app_debug_level() >= 1u) emmc_dbg(1, "cmd: resync failed (no R1 response)");
+    }
+  }
+  if (speed_reduced || speed_floor_forced) {
+    g_emmc.speed_hz = orig_speed;
+    emmc_update_timing();
   }
   if (msg && msg_len > 0u) {
-    snprintf(msg, msg_len, "CMD17 failed at LBA %lu after %lu tries",
-             (unsigned long)lba, (unsigned long)EMMC_DUMP_READ_RETRIES);
+    snprintf(msg, msg_len, "CMD17 failed at LBA %lu after %lu tries (%s)",
+             (unsigned long)lba, (unsigned long)EMMC_DUMP_READ_RETRIES,
+             g_emmc_data_err[0] ? g_emmc_data_err : "no R1 response");
   }
   return false;
+}
+
+static bool emmc_resync_transfer(uint16_t rca, bool hc_addressing) {
+  uint8_t r1[6];
+  uint32_t i;
+  emmc_send_idle_clocks(16u);
+  for (i = 0; i < EMMC_CMDX_RETRIES; i++) {
+    if (emmc_send_cmd_raw(7u, ((uint32_t)rca) << 16u, 48u, r1, sizeof(r1))) break;
+    emmc_send_idle_clocks(8u);
+  }
+  if (i >= EMMC_CMDX_RETRIES) return false;
+  if (!hc_addressing) {
+    for (i = 0; i < EMMC_CMDX_RETRIES; i++) {
+      if (emmc_send_cmd_raw(16u, EMMC_DUMP_BLOCK_SIZE, 48u, r1, sizeof(r1))) break;
+      emmc_send_idle_clocks(8u);
+    }
+    if (i >= EMMC_CMDX_RETRIES) return false;
+  }
+  emmc_send_idle_clocks(8u);
+  return true;
 }
 
 static uint16_t clamp_dump_chunk_bytes(uint32_t req) {
@@ -991,6 +1428,14 @@ bool proto_emmc_handle_text(const char *type, const char *json) {
     send_config();
     return true;
   }
+  if (strcmp(type, "emmc.layout.read") == 0) {
+    g_emmc.idpoll_enabled = false;
+    g_emmc.detect_enabled = false;
+    g_emmc.dump_active = false;
+    (void)send_layout_result();
+    if (g_emmc.tristate_default) emmc_apply_safe_io();
+    return true;
+  }
   if (strcmp(type, "emmc.dump.start") == 0) {
     char msg[96];
     uint16_t rca;
@@ -1001,10 +1446,12 @@ bool proto_emmc_handle_text(const char *type, const char *json) {
     uint32_t auto_retries_req = EMMC_DUMP_AUTO_RETRIES_DEFAULT;
     g_emmc.idpoll_enabled = false;
     g_emmc.detect_enabled = false;
+    g_emmc.dump_use_pio = true;
     if (json_extract_u32(json, "start_lba", &v)) g_emmc.dump_start_lba = v;
     if (json_extract_u32(json, "block_count", &v)) blocks = v;
     if (json_extract_u32(json, "chunk_bytes", &v)) chunk_req = v;
     if (json_extract_bool(json, "double_read", &b)) g_emmc.dump_double_read = b;
+    if (json_extract_bool(json, "use_pio", &b)) g_emmc.dump_use_pio = b;
     if (json_extract_u32(json, "verify_retries", &v)) verify_retries_req = v;
     if (json_extract_u32(json, "auto_retries", &v)) auto_retries_req = v;
     if (blocks == 0u) blocks = 1u;
@@ -1120,6 +1567,7 @@ void proto_emmc_poll(void) {
 
   if (g_emmc.dump_active) {
     uint32_t burst;
+    uint32_t burst_limit = g_emmc.dump_use_pio ? 1u : EMMC_DUMP_BURST_CHUNKS;
     if ((now - g_emmc.last_dump_ms) < EMMC_DUMP_WS_INTERVAL_MS) return;
     g_emmc.last_dump_ms = now;
     if ((now - g_emmc.dump_last_status_ms) >= EMMC_DUMP_HEARTBEAT_MS) {
@@ -1143,7 +1591,7 @@ void proto_emmc_poll(void) {
       }
       return;
     }
-    for (burst = 0; burst < EMMC_DUMP_BURST_CHUNKS; burst++) {
+    for (burst = 0; burst < burst_limit; burst++) {
       uint16_t remain;
       uint16_t n_send;
       if (g_emmc.dump_done_blocks >= g_emmc.dump_total_blocks) {
@@ -1157,6 +1605,9 @@ void proto_emmc_poll(void) {
         uint16_t rca;
         bool hc;
         lba = g_emmc.dump_start_lba + g_emmc.dump_done_blocks;
+        if (g_emmc.dump_done_blocks > 0u && (g_emmc.dump_done_blocks % EMMC_RESELECT_EVERY_BLOCKS) == 0u) {
+          emmc_resync_transfer(g_emmc.dump_rca ? g_emmc.dump_rca : 1u, g_emmc.dump_hc_addressing);
+        }
         if (!emmc_read_block_checked(lba, g_emmc.dump_hc_addressing, g_emmc.dump_block_buf, dump_msg, sizeof(dump_msg))) {
           if (g_emmc.dump_block_retry_count < g_emmc.dump_auto_retries) {
             char retry_detail[160];

@@ -339,6 +339,8 @@
           <option value="400000" selected>400 kHz</option>
           <option value="1000000">1 MHz</option>
           <option value="2000000">2 MHz</option>
+          <option value="3000000">3 MHz</option>
+          <option value="4000000">4 MHz</option>
         </select></label>
         <button id="emmcsetspeed">Apply Speed</button>
         <span id="emmcst" class="dim">idle</span>
@@ -353,6 +355,7 @@
         <button id="emmccmdtest">CMD Test Waveform</button>
         <button id="emmccmd1test">CMD1 Sequence Test</button>
         <button id="emmcsdtest">SD Init Test</button>
+        <button id="emmclayoutread">Read Layout</button>
       </div>
       <div class="bar" id="emmcpins">
         <div class="pinrow"><div>CMD</div><div id="emmc-pin-cmd-state" class="pstate p-na">N/A</div><div id="emmc-pin-cmd-rate" class="prate">--</div><div class="pbar"><div id="emmc-pin-cmd-bar" class="pbarfill"></div></div></div>
@@ -381,6 +384,21 @@
           <div class="idlbl">CSD Summary</div><div class="idval" id="emmccsdsum">--</div>
           <div class="idlbl">Between Polls</div><div class="idval" id="emmcidwindow">--</div>
           <div class="idlbl">Window Activity</div><div class="idval" id="emmcidtr">--</div>
+        </div>
+      </div>
+    </div>
+    <div class="group">
+      <div class="gtitle">Layout (EXT_CSD)</div>
+      <div class="idbox">
+        <div class="idgrid">
+          <div class="idlbl">User Area</div><div class="idval" id="emmcuserarea">--</div>
+          <div class="idlbl">Boot Area (each)</div><div class="idval" id="emmcbootarea">--</div>
+          <div class="idlbl">Partition Config</div><div class="idval" id="emmcpartcfg">--</div>
+          <div class="idlbl">GP1</div><div class="idval" id="emmcgp1">--</div>
+          <div class="idlbl">GP2</div><div class="idval" id="emmcgp2">--</div>
+          <div class="idlbl">GP3</div><div class="idval" id="emmcgp3">--</div>
+          <div class="idlbl">GP4</div><div class="idval" id="emmcgp4">--</div>
+          <div class="idlbl">Full Dump Hint</div><div class="idval" id="emmcdumphint">--</div>
         </div>
       </div>
     </div>
@@ -539,6 +557,7 @@
     const emmcCmdTestBtn=document.getElementById('emmccmdtest');
     const emmcCmd1TestBtn=document.getElementById('emmccmd1test');
     const emmcSdTestBtn=document.getElementById('emmcsdtest');
+    const emmcLayoutReadBtn=document.getElementById('emmclayoutread');
     const emmcIdStartBtn=document.getElementById('emmcidstart');
     const emmcIdStopBtn=document.getElementById('emmcidstop');
     const emmcDumpStartEl=document.getElementById('emmcdumpstart');
@@ -576,6 +595,14 @@
     const emmcCsdSumEl=document.getElementById('emmccsdsum');
     const emmcIdWindowEl=document.getElementById('emmcidwindow');
     const emmcIdTrEl=document.getElementById('emmcidtr');
+    const emmcUserAreaEl=document.getElementById('emmcuserarea');
+    const emmcBootAreaEl=document.getElementById('emmcbootarea');
+    const emmcPartCfgEl=document.getElementById('emmcpartcfg');
+    const emmcGp1El=document.getElementById('emmcgp1');
+    const emmcGp2El=document.getElementById('emmcgp2');
+    const emmcGp3El=document.getElementById('emmcgp3');
+    const emmcGp4El=document.getElementById('emmcgp4');
+    const emmcDumpHintEl=document.getElementById('emmcdumphint');
     const rawOut=document.getElementById('rawout');
     const rawCmds=document.getElementById('rawcmds');
     const sniffView=document.getElementById('sniffview');
@@ -840,6 +867,15 @@
     function parseHexU32(s,def){let t=String(s||'').trim().toLowerCase();if(t.startsWith('0x'))t=t.slice(2);if(!/^[0-9a-f]{1,8}$/.test(t))return def>>>0;return (parseInt(t,16)>>>0);}
     function hex32(v){return '0x'+((v>>>0).toString(16).toUpperCase().padStart(8,'0'));}
     function hex4(v){return ((v>>>0)&0xFFFF).toString(16).toUpperCase().padStart(4,'0');}
+    function fmtBytes(n){
+      const b=Math.max(0,Number(n)||0);
+      if(b===0)return '0 B';
+      const u=['B','KiB','MiB','GiB','TiB'];
+      let v=b,i=0;
+      while(v>=1024&&i<u.length-1){v/=1024;i++;}
+      const d=(v>=100||i===0)?0:(v>=10?1:2);
+      return v.toFixed(d)+' '+u[i]+' ('+Math.floor(b)+' bytes)';
+    }
     function le16(b,i){return (b[i]|(b[i+1]<<8))>>>0;}
     function le32(b,i){return (b[i]|(b[i+1]<<8)|(b[i+2]<<16)|(b[i+3]<<24))>>>0;}
     function parseHexByte(s,def){let t=String(s||'').trim().toLowerCase();if(t.startsWith('0x'))t=t.slice(2);if(!/^[0-9a-f]{1,2}$/.test(t))return def;return parseInt(t,16);}
@@ -946,6 +982,12 @@
     function emmcAddressModeText(ocr){
       const v=(parseNum(ocr,0)>>>0);
       return ((v&0x40000000)!==0)?'Block addressing (likely 512-byte sectors)':'Byte addressing (legacy)';
+    }
+    function decodeEmmcPartCfg(v){
+      const x=parseNum(v,0)>>>0;
+      const acc=x&0x07;
+      const map=['user','boot1','boot2','rpmb','gp1','gp2','gp3','gp4'];
+      return hexByte(x)+' active='+map[acc];
     }
     function setLikelyAddrBytesFromCapacity(bytes){
       if(!(bytes>0))return;
@@ -1291,6 +1333,34 @@
         emmcSt.textContent=(m.ready?'sd ready':'sd no-ready');
         emmcSt.className=m.ready?'ok':'dim';
         emmcLog(msg,m.ready?'ok':'dim');
+        return true;
+      }
+      if(m.type==='emmc.layout.result'){
+        if(m.ok){
+          const secCount=parseNum(m.sec_count,0)>>>0;
+          const userBytes=Number(m.user_bytes||0);
+          const bootBytes=Number(m.boot_bytes_each||0);
+          const gp1=Number(m.gp1_bytes||0),gp2=Number(m.gp2_bytes||0),gp3=Number(m.gp3_bytes||0),gp4=Number(m.gp4_bytes||0);
+          const hint='Set Start LBA=0, Blocks='+secCount+' for full user-area dump';
+          setChangedText(emmcUserAreaEl,secCount+' blocks, '+fmtBytes(userBytes));
+          setChangedText(emmcBootAreaEl,fmtBytes(bootBytes));
+          setChangedText(emmcPartCfgEl,decodeEmmcPartCfg(m.partition_config));
+          setChangedText(emmcGp1El,fmtBytes(gp1));
+          setChangedText(emmcGp2El,fmtBytes(gp2));
+          setChangedText(emmcGp3El,fmtBytes(gp3));
+          setChangedText(emmcGp4El,fmtBytes(gp4));
+          setChangedText(emmcDumpHintEl,hint);
+          emmcDumpStartEl.value='0';
+          emmcDumpBlocksEl.value=String(secCount);
+          emmcSt.textContent='layout loaded';
+          emmcSt.className='ok';
+        }else{
+          const msg=String(m.msg||'layout read failed');
+          setChangedText(emmcDumpHintEl,msg);
+          emmcSt.textContent='layout failed';
+          emmcSt.className='err';
+        }
+        emmcLog('[emmc.layout] '+JSON.stringify(m),m.ok?'ok':'err');
         return true;
       }
       if(m.type==='emmc.dump.status'){
@@ -1644,6 +1714,7 @@
     emmcCmdTestBtn.onclick=()=>{emmcSt.textContent='running cmd test...';emmcSt.className='dim';emmcSend('emmc.cmd_test',{cycles:6});};
     emmcCmd1TestBtn.onclick=()=>{emmcSt.textContent='running cmd1 test...';emmcSt.className='dim';emmcSend('emmc.cmd1_test',{retries:24,arg:0x40FF8000});};
     emmcSdTestBtn.onclick=()=>{emmcSt.textContent='running sd test...';emmcSt.className='dim';emmcSend('emmc.sd_test',{retries:32,arg:0x40FF8000});};
+    emmcLayoutReadBtn.onclick=()=>{emmcSt.textContent='reading layout...';emmcSt.className='dim';emmcSend('emmc.layout.read');};
     emmcIdStartBtn.onclick=()=>{emmcIdPollActive=true;emmcIdCount=0;emmcIdCountEl.textContent='0';setEmmcLive(true);setChangedText(emmcIdLastEl,'waiting...');setChangedText(emmcIdMidEl,'--');setChangedText(emmcIdPnmEl,'--');setChangedText(emmcIdPsnEl,'--');setChangedText(emmcOcrFlagsEl,'--');setChangedText(emmcAddrModeEl,'--');setChangedText(emmcCsdSumEl,'--');setChangedText(emmcIdWindowEl,'--');setChangedText(emmcIdTrEl,'--');emmcSend('emmc.idpoll.start',{interval_ms:parseNum(emmcIdInt.value,500),speed_hz:parseNum(emmcSpeed.value,400000),monitor_between:emmcIdMon.checked});};
     emmcIdStopBtn.onclick=()=>{emmcIdPollActive=false;emmcSend('emmc.idpoll.stop');setEmmcLive(false);setChangedText(emmcIdWindowEl,'--');setChangedText(emmcIdTrEl,'--');resetEmmcPinUi();};
     emmcDumpStartBtn.onclick=()=>{

@@ -76,7 +76,7 @@ If you need some of the SDK tools, you can get pre-build versions from the [pico
 On Windows, you will likely want to download picotool (must be the SAME version as the SDK) and pass the directory with `-Dpicotool_DIR="/dir/to/picotool` for the first `cmake`. You can also pass paths to the compilers directly, in case you are using older compilers (e.g., like you got from the R-Pi Windows SDK) with a current pico-sdk. Here is both of those shown:
 
 ```
-cmake -B build -G "Ninja" -DPICO_SDK_PATH="C:/dev/pico_sdk-src" -DCMAKE_C_COMPILER="C:/devtools/Pico SDK v1.5.1/gcc-arm-none-eabi/bin/arm-none-eabi-gcc.exe" -DCMAKE_CXX_COMPILER="C:/devtools/Pico SDK v1.5.1/gcc-arm-none-eabi/bin/arm-none-eabi-g++.exe" -Dpicotool_DIR="c:/devtools/picotool"
+cmake -B build -G "Ninja" -DPICO_SDK_PATH="C:/dev/pico_sdk-src" -DCMAKE_C_COMPILER="C:/devtools/Pico SDK v1.5.1/gcc-arm-none-eabi/bin/arm-none-eabi-gcc.exe" -DCMAKE_CXX_COMPILER="C:/devtools/Pico SDK v1.5.1/gcc-arm-none-eabi/bin/arm-none-eabi-g++.exe" -Dpicotool_DIR="c:/devtools/picotool" -Dpioasm_DIR="c:/devtools/pioasm"
 ```
 
 If your build fails when trying to build `picotool` this is because it did not find a matching version, and is attempting to build it. On Windows you may not have a regular C/C++ compiler so this will fail. If you needed to use `pioasm` you would see a similar failure (this project does not require pioasm currently as does not use the PIO blocks).
@@ -99,6 +99,4 @@ Use the CMake cache option:
 Example:
 
 ```bash
-cmake -S . -B build -DBROWSERIO_XTERM_SOURCE=LOCAL
-cmake --build build
-```
+cmak

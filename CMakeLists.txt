@@ -56,6 +56,8 @@ target_sources(picowebserverspi PUBLIC
   ${CMAKE_CURRENT_LIST_DIR}/src/xterm_assets.c
   )
 
+pico_generate_pio_header(picowebserverspi ${CMAKE_CURRENT_LIST_DIR}/src/emmc_dat0_rx.pio)
+
 if(BROWSERIO_XTERM_SOURCE STREQUAL "LOCAL")
   set(BROWSERIO_XTERM_JS_PRIMARY "/xterm.js")
   set(BROWSERIO_XTERM_JS_FALLBACK "/xterm.js")
@@ -155,7 +157,7 @@ target_sources(picowebserverspi PUBLIC
   ${LWIP}/src/apps/lwiperf/lwiperf.c
   )
 
-target_link_libraries(picowebserverspi PUBLIC pico_stdlib hardware_spi tinyusb_device tinyusb_board)
+target_link_libraries(picowebserverspi PUBLIC pico_stdlib hardware_spi hardware_pio hardware_dma tinyusb_device tinyusb_board)
 
 # due to warnings from other net source, we need to prevent error from some of the warnings options
 #if (CMAKE_C_COMPILER_ID STREQUAL "GNU")
