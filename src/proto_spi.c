@@ -763,6 +763,8 @@ static void handle_set_speed(const char *json) {
 
 static void handle_dump_start(const char *json, bool to_file) {
   uint32_t v;
+  uint64_t max_bytes;
+  uint64_t span;
   bool b;
 
   if (json_extract_u32(json, "addr_bytes", &v)) g_spi.dump_addr_bytes = (uint8_t)v;
@@ -775,11 +777,19 @@ static void handle_dump_start(const char *json, bool to_file) {
   if (json_extract_u32(json, "verify_retries", &v)) g_spi.dump_verify_retries = (uint8_t)(v > 20u ? 20u : v);
   if (json_extract_bool(json, "ff_opt", &b)) g_spi.dump_ff_opt = b;
 
-  if (g_spi.dump_addr_bytes < 2u) g_spi.dump_addr_bytes = 2u;
+  if (g_spi.dump_addr_bytes < 3u) g_spi.dump_addr_bytes = 3u;
   if (g_spi.dump_addr_bytes > 4u) g_spi.dump_addr_bytes = 4u;
   if (g_spi.dump_total_bytes == 0u) g_spi.dump_total_bytes = 4096u;
   if (g_spi.dump_chunk_bytes == 0u) g_spi.dump_chunk_bytes = 256u;
   if (g_spi.dump_chunk_bytes > SPI_MAX_DUMP_CHUNK) g_spi.dump_chunk_bytes = SPI_MAX_DUMP_CHUNK;
+  max_bytes = 1ull << (8u * g_spi.dump_addr_bytes);
+  span = max_bytes - (uint64_t)g_spi.dump_start_addr;
+  if ((uint64_t)g_spi.dump_total_bytes > span) {
+    (void)app_send_text("{\"type\":\"error\",\"code\":\"SPI_ADDR_RANGE\",\"msg\":\"length exceeds selected address-byte range\"}");
+    send_spi_status("error", "address range exceeded");
+    send_spi_state();
+    return;
+  }
 
   g_spi.dump_sent_bytes = 0;
   g_spi.dump_verify_ok_count = 0;

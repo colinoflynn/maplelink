@@ -7,11 +7,13 @@
 #include <string.h>
 
 #include "lwip/tcp.h"
+#include "lwip/timeouts.h"
 
 #define WS_SERVER_PORT 81
 #define WS_RX_BUF_LEN 2048
 #define WS_FRAME_MAX_PAYLOAD 512
 #define WS_TX_FRAME_BUF_LEN 1536
+#define WS_HANDSHAKE_TIMEOUT_MS 10000u
 
 typedef struct {
   uint32_t state[5];
@@ -28,6 +30,7 @@ typedef struct {
 struct ws_conn {
   struct tcp_pcb *pcb;
   bool upgraded;
+  uint32_t last_activity_ms;
   uint8_t rx[WS_RX_BUF_LEN];
   int rx_len;
 };
@@ -200,7 +203,9 @@ static bool ws_send(ws_conn_t *conn, uint8_t opcode, const uint8_t *payload, uin
   // part of a WebSocket frame.
   e = tcp_write(conn->pcb, g_ws_tx_frame, frame_len, TCP_WRITE_FLAG_COPY);
   if (e != ERR_OK) return false;
-  return tcp_output(conn->pcb) == ERR_OK;
+  if (tcp_output(conn->pcb) != ERR_OK) return false;
+  conn->last_activity_ms = sys_now();
+  return true;
 }
 
 bool ws_conn_send_text(ws_conn_t *conn, const uint8_t *data, uint16_t len) {
@@ -218,6 +223,7 @@ void ws_conn_close(ws_conn_t *conn) {
   tcp_arg(conn->pcb, NULL);
   tcp_recv(conn->pcb, NULL);
   tcp_sent(conn->pcb, NULL);
+  tcp_poll(conn->pcb, NULL, 0);
   tcp_err(conn->pcb, NULL);
 
   e = tcp_close(conn->pcb);
@@ -338,6 +344,7 @@ static err_t on_recv(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, err_t err)
   }
 
   tcp_recved(tpcb, p->tot_len);
+  conn->last_activity_ms = sys_now();
   pbuf_free(p);
 
   if (!conn->upgraded) {
@@ -432,6 +439,23 @@ static err_t on_recv(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, err_t err)
   return ERR_OK;
 }
 
+static err_t on_poll(void *arg, struct tcp_pcb *tpcb) {
+  ws_conn_t *conn = (ws_conn_t *)arg;
+  uint32_t now_ms = sys_now();
+  uint32_t idle_ms;
+
+  if (!conn || !tpcb) return ERR_OK;
+
+  if (conn->upgraded) return ERR_OK;
+
+  idle_ms = now_ms - conn->last_activity_ms;
+  if (idle_ms >= WS_HANDSHAKE_TIMEOUT_MS) {
+    ws_conn_close(conn);
+    return ERR_ABRT;
+  }
+  return ERR_OK;
+}
+
 static void on_err(void *arg, err_t err) {
   ws_conn_t *conn = (ws_conn_t *)arg;
   (void)err;
@@ -453,8 +477,10 @@ static err_t on_accept(void *arg, struct tcp_pcb *newpcb, err_t err) {
   }
 
   conn->pcb = newpcb;
+  conn->last_activity_ms = sys_now();
   tcp_arg(newpcb, conn);
   tcp_recv(newpcb, on_recv);
+  tcp_poll(newpcb, on_poll, 10);
   tcp_err(newpcb, on_err);
   tcp_nagle_disable(newpcb);
   return ERR_OK;

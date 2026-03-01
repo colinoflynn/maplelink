@@ -98,11 +98,14 @@ static const dhcp_config_t dhcp_config = {
 
 static err_t linkoutput_fn(struct netif *netif, struct pbuf *p) {
   (void) netif;
+  uint32_t start_ms = board_millis();
 
+  /* Never block forever here: this callback runs in lwIP's path. If the USB
+   * network endpoint gets stuck full, an infinite wait wedges the whole app.
+   */
   for (;;) {
     /* if TinyUSB isn't ready, we must signal back to lwip that there is nothing we can do */
-    if (!tud_ready())
-      return ERR_USE;
+    if (!tud_ready()) return ERR_USE;
 
     /* if the network driver can accept another packet, we make it happen */
     if (tud_network_can_xmit(p->tot_len)) {
@@ -112,6 +115,9 @@ static err_t linkoutput_fn(struct netif *netif, struct pbuf *p) {
 
     /* transfer execution to TinyUSB in the hopes that it will finish transmitting the prior packet */
     tud_task();
+
+    /* avoid hard lock if host is suspended/disconnected or endpoint stalls */
+    if ((uint32_t)(board_millis() - start_ms) > 20u) return ERR_USE;
   }
 }
 

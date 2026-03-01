@@ -50,6 +50,10 @@
 #define TCP_MSS                         (1500 /*mtu*/ - 20 /*iphdr*/ - 20 /*tcphhr*/)
 #define TCP_SND_BUF                     (4 * TCP_MSS)
 #define TCP_WND                         (4 * TCP_MSS)
+#define MEM_SIZE                        (24 * 1024)
+#define MEMP_NUM_TCP_PCB                12
+#define MEMP_NUM_TCP_PCB_LISTEN         8
+#define MEMP_NUM_TCP_SEG                48
 
 #define ETHARP_SUPPORT_STATIC_ENTRIES   1
 
@@ -61,7 +65,7 @@
 
 #define LWIP_SINGLE_NETIF               1
 
-#define PBUF_POOL_SIZE                  4
+#define PBUF_POOL_SIZE                  16
 
 #define HTTPD_USE_CUSTOM_FSDATA         0
 

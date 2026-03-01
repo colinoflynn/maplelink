@@ -63,6 +63,11 @@
     .idgrid { display:grid; grid-template-columns:130px 1fr; gap:4px 10px; }
     .idlbl { color:#93c5fd; }
     .idval { color:#e6edf3; }
+    .livepill { display:inline-block; padding:2px 8px; border:1px solid #334155; border-radius:999px; font-size:12px; }
+    .live-on { color:#bbf7d0; background:#14532d; border-color:#166534; }
+    .live-off { color:#cbd5e1; background:#1f2937; border-color:#374151; }
+    .live-pulse { box-shadow:0 0 0 0 rgba(34,197,94,.35); animation:pulse 700ms ease-out; }
+    @keyframes pulse { 0% { box-shadow:0 0 0 0 rgba(34,197,94,.35); } 100% { box-shadow:0 0 0 4px rgba(34,197,94,0); } }
     .iw-clear { color:#22c55e; font-weight:bold; }
     .iw-bad { color:#ef4444; font-weight:bold; }
     .dbar { margin-top:8px; border:1px solid #334155; background:#0b1220; border-radius:6px; padding:8px; }
@@ -206,6 +211,8 @@
         <button id="spiidstart">Start ID Poll</button>
         <button id="spiidstop">Stop ID Poll</button>
         <span class="dim">Poll count: <span id="idpollcount">0</span></span>
+        <span id="idpolllive" class="livepill live-off">STOPPED</span>
+        <span class="dim">Last update: <span id="idpollage">--</span></span>
       </div>
       <div class="idbox">
         <div class="idgrid">
@@ -261,7 +268,7 @@
       <div class="gtitle">FLASH READ</div>
       <div class="gtitle">Read Configuration</div>
       <div class="grow">
-        <label>Read ADDR CMD <input id="spidumpcmd3" type="text" value="0x03" style="width:68px"></label>
+        <label>Read 3-byte ADDR CMD <input id="spidumpcmd3" type="text" value="0x03" style="width:68px"></label>
         <label>Read 4-byte ADDR CMD <input id="spidumpcmd4" type="text" value="0x13" style="width:68px"></label>
         <label>Addr Bytes <select id="spidumpaddr"><option selected>3</option><option>4</option></select></label>
         <label>Chunk <input id="spidumpchunk" type="number" min="16" step="16" value="256"></label>
@@ -393,6 +400,8 @@
     const spiStatusReadBtn=document.getElementById('spistatusread');
     const sfdpLen=document.getElementById('sfdplen');
     const idPollCountEl=document.getElementById('idpollcount');
+    const idPollLiveEl=document.getElementById('idpolllive');
+    const idPollAgeEl=document.getElementById('idpollage');
     const spiDispStartBtn=document.getElementById('spidispstart');
     const spiDispStopBtn=document.getElementById('spidispstop');
     const spiDumpStartBtn=document.getElementById('spidumpstart');
@@ -490,8 +499,9 @@
     const dlText=document.getElementById('dltext');
     const dlRaw=document.getElementById('dlraw');
     const cursor=document.createElement('span');cursor.className='cursor';
-    const ws=new WebSocket('ws://'+location.hostname+':81/ws');
-    ws.binaryType='arraybuffer';
+    let ws=null;
+    let wsReconnectTimer=null;
+    let wsPingTimer=null;
     const enc=new TextEncoder();
     const dec=new TextDecoder('utf-8',{fatal:false});
     let lineBuf='';
@@ -525,6 +535,8 @@
     let displayMode=false;
     let displayStopSent=false;
     let idPollCount=0;
+    let idPollActive=false;
+    let idPollLastUpdateMs=0;
     let dumpStartMs=0;
     let dumpLastRateMs=0;
     let dumpLastRateBytes=0;
@@ -548,7 +560,31 @@
     const WS_CH_SPI_DUMP_FF=0x03;
 
     function markDirty(v){if(v){applyBtn.classList.add('pending');dirty.classList.add('show');}else{applyBtn.classList.remove('pending');dirty.classList.remove('show');}}
+    function setChangedText(el,val,fresh){
+      if(!el)return;
+      const next=(val==null)?'--':String(val);
+      const changed=(el.textContent!==next);
+      el.textContent=next;
+      if(changed||fresh!==false){
+        el.classList.remove('live-pulse');
+        void el.offsetWidth;
+        el.classList.add('live-pulse');
+      }
+    }
     function setTab(tab){activeTab=tab;const t=tab==='terminal';const s=tab==='spi';const r=tab==='raw';const d=tab==='debug';terminalPanel.classList.toggle('hidden',!t);spiPanel.classList.toggle('hidden',!s);rawPanel.classList.toggle('hidden',!r);debugPanel.classList.toggle('hidden',!d);tabTerm.classList.toggle('active',t);tabSpi.classList.toggle('active',s);tabRaw.classList.toggle('active',r);tabDebug.classList.toggle('active',d);if(t)term.focus();layoutTerminalShell();}
+    function setIdPollLive(active){
+      idPollActive=!!active;
+      idPollLiveEl.textContent=idPollActive?'ACTIVE':'STOPPED';
+      idPollLiveEl.className='livepill '+(idPollActive?'live-on':'live-off');
+      if(!idPollActive){idPollLastUpdateMs=0;idPollAgeEl.textContent='--';}
+    }
+    function markIdPollUpdate(){
+      idPollLastUpdateMs=Date.now();
+      idPollAgeEl.textContent='just now';
+      idPollLiveEl.classList.remove('live-pulse');
+      void idPollLiveEl.offsetWidth;
+      idPollLiveEl.classList.add('live-pulse');
+    }
     function layoutTerminalShell(){
       if(!shell||terminalPanel.classList.contains('hidden'))return;
       const rect=shell.getBoundingClientRect();
@@ -718,13 +754,23 @@
       const map={0xEF:'Winbond',0xC2:'Macronix',0x20:'Micron/ST',0x1F:'Adesto/Dialog',0x9D:'ISSI',0xBF:'Microchip/SST',0x01:'Spansion/Cypress',0x37:'AMIC',0x8C:'ESMT',0xA1:'Fudan'};
       return map[id]||'Unknown';
     }
+    function jedecCapacityBytes(m,t,c){
+      // Vendor-specific override for common Winbond parts where legacy capacity
+      // code 0x20 means 512 Mbit (64 MiB), not 4 GiB.
+      if(m===0xEF){
+        const wb={0x14:1*1024*1024,0x15:2*1024*1024,0x16:4*1024*1024,0x17:8*1024*1024,0x18:16*1024*1024,0x19:32*1024*1024,0x20:64*1024*1024,0x21:128*1024*1024};
+        if(wb[c])return wb[c];
+      }
+      // Generic legacy fallback: many parts encode bytes as 2^N for N=0x10..0x1F.
+      if(c>=0x10&&c<=0x1F)return Math.pow(2,c);
+      return 0;
+    }
     function decodeJedec(bytes){
       if(bytes.length<3)return null;
       const m=bytes[0],t=bytes[1],c=bytes[2];
       let cap='Unknown';
-      let bytesN=0;
-      if(c>=0x10&&c<=0x30){
-        bytesN=Math.pow(2,c);
+      let bytesN=jedecCapacityBytes(m,t,c);
+      if(bytesN>0){
         const mib=(bytesN/1048576);
         const mbit=(bytesN*8/1048576);
         cap=(mib>=1?mib.toFixed(mib>=16?0:2)+' MiB / ':'')+mbit.toFixed(mbit>=128?0:2)+' Mbit ('+bytesN+' bytes)';
@@ -761,7 +807,10 @@
         if(m.idpoll_interval_ms)spiIdInt.value=String(m.idpoll_interval_ms);
         if(typeof m.idpoll_monitor_between==='boolean')spiIdMon.checked=m.idpoll_monitor_between;
         if(m.dump&&m.dump.addr_bytes)spiDumpAddr.value=String(m.dump.addr_bytes);
-        if(m.dump&&typeof m.dump.read_cmd==='number')spiDumpCmd3.value=hexByte(m.dump.read_cmd);
+        if(m.dump&&typeof m.dump.read_cmd==='number'){
+          if(parseNum(m.dump.addr_bytes,3)>=4)spiDumpCmd4.value=hexByte(m.dump.read_cmd);
+          else spiDumpCmd3.value=hexByte(m.dump.read_cmd);
+        }
         if(m.dump&&typeof m.dump.double_read==='boolean')spiDumpDbl.checked=m.dump.double_read;
         if(m.dump&&typeof m.dump.verify_retries==='number')spiDumpRetry.value=String(m.dump.verify_retries);
         if(m.dump&&typeof m.dump.ff_opt==='boolean')spiDumpFf.checked=m.dump.ff_opt;
@@ -784,90 +833,92 @@
         return true;
       }
       if(m.type==='spi.id.result'){
+        setIdPollLive(true);
         idPollCount++;
         idPollCountEl.textContent=String(idPollCount);
+        markIdPollUpdate();
         const raw=(m.id_hex||'').trim();
-        idRaw.textContent=raw||'--';
+        setChangedText(idRaw,raw||'--');
         const b=parseIdHex(raw);
         const d=decodeJedec(b);
-        if(d){idMfg.textContent=d.mfg;idType.textContent=d.type;idCap.textContent=d.cap;idSummary.textContent=d.summary;if(d.bytes>0)applyAutoCapacity(d.bytes,'JEDEC ID');}
-        else{idMfg.textContent='--';idType.textContent='--';idCap.textContent='--';idSummary.textContent='unable to decode';}
+        if(d){setChangedText(idMfg,d.mfg);setChangedText(idType,d.type);setChangedText(idCap,d.cap);setChangedText(idSummary,d.summary);if(d.bytes>0)applyAutoCapacity(d.bytes,'JEDEC ID');}
+        else{setChangedText(idMfg,'--');setChangedText(idType,'--');setChangedText(idCap,'--');setChangedText(idSummary,'unable to decode');}
         spiSt.textContent='id '+(m.id_hex||'');spiSt.className='ok';spiLog('[spi.id] '+JSON.stringify(m));return true;
       }
       if(m.type==='spi.idpoll.window'){
         const tr=m.transitions||{};
         const total=parseNum(m.total,0);
         const clear=!!m.clear;
-        idWindow.textContent=clear?'CLEAR':'INTERFERENCE';
+        setChangedText(idWindow,clear?'CLEAR':'INTERFERENCE');
         idWindow.className='idval '+(clear?'iw-clear':'iw-bad');
-        idWinTr.textContent='total '+total+' (MOSI '+parseNum(tr.mosi,0)+', MISO '+parseNum(tr.miso,0)+', CS '+parseNum(tr.cs,0)+', CLK '+parseNum(tr.clk,0)+')';
+        setChangedText(idWinTr,'total '+total+' (MOSI '+parseNum(tr.mosi,0)+', MISO '+parseNum(tr.miso,0)+', CS '+parseNum(tr.cs,0)+', CLK '+parseNum(tr.clk,0)+')');
         return true;
       }
       if(m.type==='spi.sfdp.result'){
         if(!m.ok){
-          sfdpSig.textContent='read failed';
-          sfdpRev.textContent='--';
-          sfdpNph.textContent='--';
-          sfdpBfpt.textContent='--';
-          sfdpAddr.textContent='--';
-          sfdpReadCmd.textContent='--';
-          sfdpRead4.textContent='--';
-          sfdpDens.textContent='--';
-          sfdpRaw.textContent='--';
+          setChangedText(sfdpSig,'read failed');
+          setChangedText(sfdpRev,'--');
+          setChangedText(sfdpNph,'--');
+          setChangedText(sfdpBfpt,'--');
+          setChangedText(sfdpAddr,'--');
+          setChangedText(sfdpReadCmd,'--');
+          setChangedText(sfdpRead4,'--');
+          setChangedText(sfdpDens,'--');
+          setChangedText(sfdpRaw,'--');
           return true;
         }
-        sfdpSig.textContent=(m.sig||'--')+(m.sig_hex?(' ('+m.sig_hex+')'):'');
-        sfdpRev.textContent=(m.rev_major==null||m.rev_minor==null)?'--':('v'+m.rev_major+'.'+m.rev_minor);
-        sfdpNph.textContent=(m.nph==null)?'--':String(m.nph);
+        setChangedText(sfdpSig,(m.sig||'--')+(m.sig_hex?(' ('+m.sig_hex+')'):''));
+        setChangedText(sfdpRev,(m.rev_major==null||m.rev_minor==null)?'--':('v'+m.rev_major+'.'+m.rev_minor));
+        setChangedText(sfdpNph,(m.nph==null)?'--':String(m.nph));
         if(m.bfpt_found){
-          sfdpBfpt.textContent='ptr 0x'+parseNum(m.bfpt_ptr,0).toString(16)+', '+parseNum(m.bfpt_len_dw,0)+' dwords, rev '+parseNum(m.bfpt_rev_major,0)+'.'+parseNum(m.bfpt_rev_minor,0);
+          setChangedText(sfdpBfpt,'ptr 0x'+parseNum(m.bfpt_ptr,0).toString(16)+', '+parseNum(m.bfpt_len_dw,0)+' dwords, rev '+parseNum(m.bfpt_rev_major,0)+'.'+parseNum(m.bfpt_rev_minor,0));
         }else{
-          sfdpBfpt.textContent='not found';
+          setChangedText(sfdpBfpt,'not found');
         }
-        sfdpAddr.textContent=m.addr_mode||'unknown';
-        sfdpReadCmd.textContent='0x'+parseNum(m.read_cmd_3b,3).toString(16).toUpperCase().padStart(2,'0');
-        sfdpRead4.textContent=(m.read4b_cmd_known?('0x'+parseNum(m.read_cmd_4b,0).toString(16).toUpperCase().padStart(2,'0')):'not reported in SFDP');
+        setChangedText(sfdpAddr,m.addr_mode||'unknown');
+        setChangedText(sfdpReadCmd,'0x'+parseNum(m.read_cmd_3b,3).toString(16).toUpperCase().padStart(2,'0'));
+        setChangedText(sfdpRead4,(m.read4b_cmd_known?('0x'+parseNum(m.read_cmd_4b,0).toString(16).toUpperCase().padStart(2,'0')):'not reported in SFDP'));
         if(typeof m.read_cmd_3b==='number')spiDumpCmd3.value=hexByte(parseNum(m.read_cmd_3b,0x03));
         if(m.read4b_cmd_known&&typeof m.read_cmd_4b==='number')spiDumpCmd4.value=hexByte(parseNum(m.read_cmd_4b,0x13));
         if(m.density_ok){
           const bits=parseNum(m.density_bits,0);
           const bytes=parseNum(m.density_bytes,0);
           const mib=(bytes/1048576).toFixed(bytes>=16*1048576?0:2);
-          sfdpDens.textContent=bits+' bits ('+bytes+' bytes, '+mib+' MiB)';
+          setChangedText(sfdpDens,bits+' bits ('+bytes+' bytes, '+mib+' MiB)');
           applyAutoCapacity(bytes,'SFDP');
           if((m.addr_mode||'')==='4-byte only')spiDumpAddr.value='4';
           else if((m.addr_mode||'')==='3-byte only')spiDumpAddr.value='3';
         }else{
-          sfdpDens.textContent='unknown (raw 0x'+parseNum(m.density_raw,0).toString(16)+')';
+          setChangedText(sfdpDens,'unknown (raw 0x'+parseNum(m.density_raw,0).toString(16)+')');
         }
-        sfdpRaw.textContent=m.raw_hex||'--';
+        setChangedText(sfdpRaw,m.raw_hex||'--');
         return true;
       }
       if(m.type==='spi.status.result'){
         if(!m.ok){
-          spiSr1.textContent='read failed';
-          spiSr2.textContent='--';
-          spiSr3.textContent='--';
-          spiWip.textContent='--';
-          spiWel.textContent='--';
-          spiBp.textContent='--';
-          spiTb.textContent='--';
-          spiSec.textContent='--';
-          spiSrp0.textContent='--';
-          spiQe.textContent='--';
+          setChangedText(spiSr1,'read failed');
+          setChangedText(spiSr2,'--');
+          setChangedText(spiSr3,'--');
+          setChangedText(spiWip,'--');
+          setChangedText(spiWel,'--');
+          setChangedText(spiBp,'--');
+          setChangedText(spiTb,'--');
+          setChangedText(spiSec,'--');
+          setChangedText(spiSrp0,'--');
+          setChangedText(spiQe,'--');
           return true;
         }
         const sr1=parseNum(m.sr1,0), sr2=parseNum(m.sr2,0), sr3=parseNum(m.sr3,0);
-        spiSr1.textContent=hexByte(sr1);
-        spiSr2.textContent=(m.sr2_ok?hexByte(sr2):'n/a');
-        spiSr3.textContent=(m.sr3_ok?hexByte(sr3):'n/a');
-        spiWip.textContent=m.wip?'1 (busy)':'0 (ready)';
-        spiWel.textContent=m.wel?'1 (enabled)':'0 (disabled)';
-        spiBp.textContent='0b'+parseNum(m.bp,0).toString(2).padStart(3,'0');
-        spiTb.textContent=m.tb?'1':'0';
-        spiSec.textContent=m.sec?'1':'0';
-        spiSrp0.textContent=m.srp0?'1':'0';
-        spiQe.textContent=m.qe?'1':'0/unknown';
+        setChangedText(spiSr1,hexByte(sr1));
+        setChangedText(spiSr2,(m.sr2_ok?hexByte(sr2):'n/a'));
+        setChangedText(spiSr3,(m.sr3_ok?hexByte(sr3):'n/a'));
+        setChangedText(spiWip,m.wip?'1 (busy)':'0 (ready)');
+        setChangedText(spiWel,m.wel?'1 (enabled)':'0 (disabled)');
+        setChangedText(spiBp,'0b'+parseNum(m.bp,0).toString(2).padStart(3,'0'));
+        setChangedText(spiTb,m.tb?'1':'0');
+        setChangedText(spiSec,m.sec?'1':'0');
+        setChangedText(spiSrp0,m.srp0?'1':'0');
+        setChangedText(spiQe,m.qe?'1':'0/unknown');
         return true;
       }
       if(m.type==='spi.raw.result'){
@@ -925,20 +976,45 @@
     function processRxChunks(){if(!rxChunks.length){rxFlushTimer=null;return;}const parts=rxChunks;rxChunks=[];rxFlushTimer=null;let total=0;for(const p of parts)total+=p.length;const b=new Uint8Array(total);let o=0;for(const p of parts){b.set(p,o);o+=p.length;}pushRawLog(b);queueHex(b);const txt=dec.decode(b);if(decodeMode.value==='vt100'&&xterm){if(scrollLock.checked&&xterm.buffer&&xterm.buffer.active){const vp=xterm.buffer.active.viewportY;xterm.write(txt,()=>xterm.scrollToLine(vp));}else{xterm.write(txt);}appendTextLog(txt);}else if(decodeMode.value==='ansi')appendAnsi(txt);else appendTerm(txt);}
     function queueRx(bytes){rxChunks.push(bytes);if(rxFlushTimer===null)rxFlushTimer=setTimeout(processRxChunks,16);}
     function enterBytes(){if(enterMode.value==='none')return new Uint8Array([]);if(enterMode.value==='lf')return new Uint8Array([10]);if(enterMode.value==='crlf')return new Uint8Array([13,10]);return new Uint8Array([13]);}
-    function sendBinary(arr){if(ws.readyState===1&&arr&&arr.length>0)ws.send(arr);}
+    function sendBinary(arr){if(ws&&ws.readyState===1&&arr&&arr.length>0)ws.send(arr);}
     function sendTextLine(str){if(!str)return;sendBinary(enc.encode(str));}
     function parseByteInput(s){const toks=s.trim().split(/[\s,]+/).filter(Boolean);const out=[];for(const t0 of toks){let t=t0.toLowerCase();if(t.startsWith('0x'))t=t.slice(2);if(!/^[0-9a-f]{1,2}$/.test(t))throw new Error('bad byte: '+t0);out.push(parseInt(t,16));}return new Uint8Array(out);}
     function addHistory(list,val){const v=(val||'').trim();if(!v)return;const i=list.indexOf(v);if(i>=0)list.splice(i,1);list.unshift(v);if(list.length>MAX_HISTORY)list.length=MAX_HISTORY;}
     function syncHistory(sel,list,label){sel.innerHTML='';const first=document.createElement('option');first.value='';first.textContent=label;sel.appendChild(first);for(const v of list){const o=document.createElement('option');o.value=v;o.textContent=v.length>72?v.slice(0,72)+'...':v;sel.appendChild(o);}sel.value='';}
-    function send(o){if(ws.readyState===1)ws.send(JSON.stringify(o));}
+    function send(o){if(ws&&ws.readyState===1)ws.send(JSON.stringify(o));}
     function loadScript(src){return new Promise((ok,fail)=>{const s=document.createElement('script');s.src=src;s.onload=ok;s.onerror=fail;document.head.appendChild(s);});}
     function loadCss(href){if(document.querySelector('link[data-xterm]'))return;const l=document.createElement('link');l.rel='stylesheet';l.href=href;l.setAttribute('data-xterm','1');document.head.appendChild(l);}
     async function ensureXterm(){if(xterm||xtermLoading||xtermFailed)return;xtermLoading=true;try{loadCss('__XTERM_CSS_URL__');if(!window.Terminal){try{await loadScript('__XTERM_JS_PRIMARY__');}catch(_){await loadScript('__XTERM_JS_FALLBACK__');}}xterm=new window.Terminal({cursorBlink:true,convertEol:false,scrollback:xtermScrollback(),theme:{background:'#0b0f14',foreground:'#e6edf3'}});xterm.open(termVt);xterm.onData(d=>sendBinary(enc.encode(d)));xterm.write('\r\n[VT100 mode active]\r\n');}catch(_){xtermFailed=true;appendTerm('\n[error failed to load xterm.js, check internet access]\n','err');decodeMode.value='ansi';shell.classList.remove('vt');}finally{xtermLoading=false;}}
     function syncDecodeMode(){if(decodeMode.value==='vt100'){shell.classList.add('vt');ensureXterm();}else{shell.classList.remove('vt');}layoutTerminalShell();}
 
-    ws.onopen=()=>{st.textContent='connected';st.className='ok';send({type:'hello'});send({type:'uart.get_config',port:'uart0'});send({type:'uart.rxmon.get'});spiSend('spi.get_config');send({type:'system.get_debug'});term.focus();};
-    ws.onclose=()=>{st.textContent='disconnected';st.className='err';};
-    ws.onmessage=(e)=>{if(typeof e.data==='string'){try{const m=JSON.parse(e.data);if(m.type==='hello'){aboutFw.textContent=m.fw||'--';aboutBuild.textContent=((m.build_date||'')+' '+(m.build_time||'')).trim()||'--';}else if(m.type==='uart.config'){if(typeof m.tx_pin==='number'&&typeof m.rx_pin==='number')uartPins.textContent='UART0 pins: TX=GPIO'+m.tx_pin+', RX=GPIO'+m.rx_pin;appendTerm('\n[config '+JSON.stringify(m)+']\n','ok');}else if(m.type==='uart.rxmon'){setRxMonUi(m);}else if(m.type==='system.bootsel'){appendTerm('\n[system entering USB boot mode]\n','ok');spiLog('[system] entering USB boot mode','ok');dbgLog('[system] entering USB boot mode','ok');}else if(m.type==='system.debug'){if(typeof m.level==='number'){dbgLevel.value=String(m.level);dbgStatus.textContent='level '+m.level;}dbgLog('[debug cfg] '+JSON.stringify(m),'dim');}else if(m.type==='debug.log'){dbgLog('L'+(m.level||0)+' '+(m.scope||'sys')+': '+(m.msg||''));}else if(m.type==='error'){appendTerm('\n[error '+(m.msg||'unknown')+']\n','err');dbgLog('[error] '+(m.code||'')+' '+(m.msg||'unknown'),'err');if((m.code||'').startsWith('SPI_')){spiLog('[spi.error] '+(m.msg||m.code),'err');spiDump.textContent='dump: error ('+(m.msg||m.code)+')';}}else if(m.type&&m.type.startsWith('spi.')){if(!handleSpiMessage(m))spiLog('[spi] '+JSON.stringify(m));}else{appendTerm('\n['+e.data+']\n');}}catch(_){appendTerm(e.data);}}else{const b=new Uint8Array(e.data);if(b.length>=2&&b[0]===WS_BIN_MAGIC){const ch=b[1];if(ch===WS_CH_UART){queueRx(b.slice(2));}else if(ch===WS_CH_SPI_DUMP_DATA&&b.length>=8){const off=le32(b,2);const cnt=le16(b,6);const p=b.slice(8,8+cnt);if((off||0)+p.length>dumpExpectedBytes)dumpExpectedBytes=(off||0)+p.length;dumpAppendBytes(p);spiDump.textContent='dump offset '+off+' data '+p.length+' bytes';}else if(ch===WS_CH_SPI_DUMP_FF&&b.length>=8){const off=le32(b,2);const cnt=le16(b,6);if((off||0)+cnt>dumpExpectedBytes)dumpExpectedBytes=(off||0)+cnt;dumpAppendBytes(new Uint8Array(cnt).fill(0xFF));spiDump.textContent='dump offset '+off+' ff-run '+cnt+' bytes';}}else{queueRx(b);}}};
+    function attachWsHandlers(){
+      if(!ws)return;
+      ws.onopen=()=>{
+        st.textContent='connected';st.className='ok';
+        if(wsReconnectTimer){clearTimeout(wsReconnectTimer);wsReconnectTimer=null;}
+        if(wsPingTimer)clearInterval(wsPingTimer);
+        wsPingTimer=setInterval(()=>send({type:'ping'}),5000);
+        send({type:'hello'});send({type:'uart.get_config',port:'uart0'});send({type:'uart.rxmon.get'});spiSend('spi.get_config');send({type:'system.get_debug'});term.focus();
+      };
+      ws.onclose=()=>{
+        st.textContent='disconnected';st.className='err';
+        if(wsPingTimer){clearInterval(wsPingTimer);wsPingTimer=null;}
+        if(!wsReconnectTimer){
+          wsReconnectTimer=setTimeout(()=>{
+            wsReconnectTimer=null;
+            openWs();
+          },1500);
+        }
+      };
+      ws.onmessage=(e)=>{if(typeof e.data==='string'){try{const m=JSON.parse(e.data);if(m.type==='hello'){aboutFw.textContent=m.fw||'--';aboutBuild.textContent=((m.build_date||'')+' '+(m.build_time||'')).trim()||'--';}else if(m.type==='pong'){}else if(m.type==='uart.config'){if(typeof m.tx_pin==='number'&&typeof m.rx_pin==='number')uartPins.textContent='UART0 pins: TX=GPIO'+m.tx_pin+', RX=GPIO'+m.rx_pin;appendTerm('\n[config '+JSON.stringify(m)+']\n','ok');}else if(m.type==='uart.rxmon'){setRxMonUi(m);}else if(m.type==='system.bootsel'){appendTerm('\n[system entering USB boot mode]\n','ok');spiLog('[system] entering USB boot mode','ok');dbgLog('[system] entering USB boot mode','ok');}else if(m.type==='system.debug'){if(typeof m.level==='number'){dbgLevel.value=String(m.level);dbgStatus.textContent='level '+m.level;}dbgLog('[debug cfg] '+JSON.stringify(m),'dim');}else if(m.type==='debug.log'){dbgLog('L'+(m.level||0)+' '+(m.scope||'sys')+': '+(m.msg||''));}else if(m.type==='error'){appendTerm('\n[error '+(m.msg||'unknown')+']\n','err');dbgLog('[error] '+(m.code||'')+' '+(m.msg||'unknown'),'err');if((m.code||'').startsWith('SPI_')){spiLog('[spi.error] '+(m.msg||m.code),'err');spiDump.textContent='dump: error ('+(m.msg||m.code)+')';}}else if(m.type&&m.type.startsWith('spi.')){if(!handleSpiMessage(m))spiLog('[spi] '+JSON.stringify(m));}else{appendTerm('\n['+e.data+']\n');}}catch(_){appendTerm(e.data);}}else{const b=new Uint8Array(e.data);if(b.length>=2&&b[0]===WS_BIN_MAGIC){const ch=b[1];if(ch===WS_CH_UART){queueRx(b.slice(2));}else if(ch===WS_CH_SPI_DUMP_DATA&&b.length>=8){const off=le32(b,2);const cnt=le16(b,6);const p=b.slice(8,8+cnt);if((off||0)+p.length>dumpExpectedBytes)dumpExpectedBytes=(off||0)+p.length;dumpAppendBytes(p);spiDump.textContent='dump offset '+off+' data '+p.length+' bytes';}else if(ch===WS_CH_SPI_DUMP_FF&&b.length>=8){const off=le32(b,2);const cnt=le16(b,6);if((off||0)+cnt>dumpExpectedBytes)dumpExpectedBytes=(off||0)+cnt;dumpAppendBytes(new Uint8Array(cnt).fill(0xFF));spiDump.textContent='dump offset '+off+' ff-run '+cnt+' bytes';}}else{queueRx(b);}}};
+    }
+
+    function openWs(){
+      if(ws && (ws.readyState===WebSocket.OPEN || ws.readyState===WebSocket.CONNECTING)) return;
+      ws=new WebSocket('ws://'+location.hostname+':81/ws');
+      ws.binaryType='arraybuffer';
+      attachWsHandlers();
+    }
 
     applyBtn.onclick=()=>{send({type:'uart.set_config',port:'uart0',baud:parseInt(document.getElementById('baud').value,10)||115200,data_bits:parseInt(document.getElementById('data').value,10)||8,parity:document.getElementById('parity').value,stop_bits:parseInt(document.getElementById('stop').value,10)||1,flow:'none'});markDirty(false);};
     document.getElementById('sendbytes').onclick=()=>{try{const src=tx.value;const b=parseByteInput(src);if(!b.length)return;sendBinary(b);addHistory(hexHistory,src);syncHistory(histHex,hexHistory,'recent hex...');}catch(err){appendTerm('\n[error '+err.message+']\n','err');}};
@@ -979,8 +1055,8 @@
     spiDetectStopBtn.onclick=()=>{spiSend('spi.detect.stop');resetPinUi();};
     spiSniffStartBtn.onclick=()=>{resetSnifferUi();spiSend('spi.sniffer.start');};
     spiSniffStopBtn.onclick=()=>spiSend('spi.sniffer.stop');
-    spiIdStartBtn.onclick=()=>{idPollCount=0;idPollCountEl.textContent='0';idWindow.textContent='--';idWindow.className='idval';idWinTr.textContent='--';spiSend('spi.idpoll.start',{interval_ms:parseNum(spiIdInt.value,250),speed_hz:parseNum(spiSpeed.value,1000000),monitor_between:spiIdMon.checked});};
-    spiIdStopBtn.onclick=()=>{spiSend('spi.idpoll.stop');idWindow.textContent='--';idWindow.className='idval';idWinTr.textContent='--';resetPinUi();};
+    spiIdStartBtn.onclick=()=>{idPollCount=0;idPollCountEl.textContent='0';setIdPollLive(true);idPollAgeEl.textContent='waiting...';idWindow.textContent='--';idWindow.className='idval';idWinTr.textContent='--';spiSend('spi.idpoll.start',{interval_ms:parseNum(spiIdInt.value,250),speed_hz:parseNum(spiSpeed.value,1000000),monitor_between:spiIdMon.checked});};
+    spiIdStopBtn.onclick=()=>{spiSend('spi.idpoll.stop');setIdPollLive(false);idWindow.textContent='--';idWindow.className='idval';idWinTr.textContent='--';resetPinUi();};
     sfdpReadBtn.onclick=()=>{spiSend('spi.sfdp.read',{length:parseNum(sfdpLen.value,256)});};
     spiStatusReadBtn.onclick=()=>{spiSend('spi.status.read');};
     spiDumpRows.addEventListener('input',renderDumpRecent);
@@ -1001,13 +1077,29 @@
       const cmd3=parseHexByte(spiDumpCmd3.value,0x03);
       const cmd4=parseHexByte(spiDumpCmd4.value,cmd3);
       const readCmd=(addrBytes>=4)?cmd4:cmd3;
+      const maxBytes=(addrBytes>=4)?0x100000000:0x1000000;
+      const span=maxBytes-startAddr;
+      if(dumpExpectedBytes>span){
+        dumpSessionActive=false;
+        const modeTxt=toFile?'dump':'display';
+        const msg=modeTxt+' length/address exceeds '+addrBytes+'-byte address range';
+        spiSt.textContent='range error';spiSt.className='err';
+        spiDump.textContent=modeTxt+': range error';
+        spiLog('[spi.error] '+msg+' (start='+hex32(startAddr)+', len='+dumpExpectedBytes+', max='+span+')','err');
+        return;
+      }
       spiSend(toFile?'spi.dump.start':'spi.display.start',{read_cmd:readCmd,addr_bytes:addrBytes,start_addr:startAddr,length_bytes:dumpExpectedBytes,chunk_bytes:parseNum(spiDumpChunk.value,256),double_read:spiDumpDbl.checked,verify_retries:parseNum(spiDumpRetry.value,0),ff_opt:spiDumpFf.checked,speed_hz:parseNum(spiSpeed.value,1000000)});
     }
     spiDispStartBtn.onclick=()=>startRead(false);
     spiDispStopBtn.onclick=()=>{spiSt.textContent='stopping display...';spiSt.className='dim';spiDump.textContent='display: stopping...';spiSend('spi.display.stop');};
     spiDumpStartBtn.onclick=()=>startRead(true);
     spiDumpStopBtn.onclick=()=>{spiSt.textContent='stopping dump...';spiSt.className='dim';spiDump.textContent='dump: stopping...';spiSend('spi.dump.stop');};
-    term.addEventListener('keydown',(e)=>{if(decodeMode.value==='vt100')return;if(ws.readyState!==1)return;if(sendMode.value==='type'){if(e.key==='Enter'){sendBinary(enterBytes());if(localEcho.checked)appendTerm('\n','dim');}else if(e.key==='Backspace'){sendBinary(new Uint8Array([127]));if(localEcho.checked)appendTerm('\b','dim');}else if(e.key.length===1){sendBinary(enc.encode(e.key));if(localEcho.checked)appendTerm(e.key,'dim');}else return;}else{if(e.key==='Enter'){sendTextLine(lineBuf);sendBinary(enterBytes());if(localEcho.checked)appendTerm('\n','dim');lineBuf='';}else if(e.key==='Backspace'){if(lineBuf.length>0)lineBuf=lineBuf.slice(0,-1);}else if(e.key.length===1){lineBuf+=e.key;if(localEcho.checked)appendTerm(e.key,'dim');}else return;}e.preventDefault();});
+    setInterval(()=>{
+      if(!idPollActive||!idPollLastUpdateMs)return;
+      const s=Math.max(0,Math.floor((Date.now()-idPollLastUpdateMs)/1000));
+      idPollAgeEl.textContent=(s===0)?'just now':(s+'s ago');
+    },500);
+    term.addEventListener('keydown',(e)=>{if(decodeMode.value==='vt100')return;if(!ws||ws.readyState!==1)return;if(sendMode.value==='type'){if(e.key==='Enter'){sendBinary(enterBytes());if(localEcho.checked)appendTerm('\n','dim');}else if(e.key==='Backspace'){sendBinary(new Uint8Array([127]));if(localEcho.checked)appendTerm('\b','dim');}else if(e.key.length===1){sendBinary(enc.encode(e.key));if(localEcho.checked)appendTerm(e.key,'dim');}else return;}else{if(e.key==='Enter'){sendTextLine(lineBuf);sendBinary(enterBytes());if(localEcho.checked)appendTerm('\n','dim');lineBuf='';}else if(e.key==='Backspace'){if(lineBuf.length>0)lineBuf=lineBuf.slice(0,-1);}else if(e.key.length===1){lineBuf+=e.key;if(localEcho.checked)appendTerm(e.key,'dim');}else return;}e.preventDefault();});
     window.addEventListener('resize',layoutTerminalShell);
     setTab('terminal');
     layoutTerminalShell();
@@ -1016,6 +1108,7 @@
     resetPinUi();
     resetSnifferUi();
     updateReadRanges();
+    openWs();
     keepCursor();
   </script>
 </body>

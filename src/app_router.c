@@ -108,6 +108,9 @@ static bool dispatch_text(const char *type, const char *json) {
     }
     return send_debug_config();
   }
+  if (strcmp(type, "ping") == 0) {
+    return app_send_text("{\"type\":\"pong\"}");
+  }
   if (proto_uart_handle_text(type, json)) return true;
   if (proto_spi_handle_text(type, json)) return true;
   if (proto_i2c_handle_text(type, json)) return true;
