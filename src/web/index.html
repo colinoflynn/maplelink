@@ -288,6 +288,7 @@
       <div class="grow">
         <label>Dump Length <input id="spidumplen" type="number" min="1" step="256" value="4096"></label>
         <span class="dim">Dump range in hex: <span id="spidumprange">0x00000000 : 0x00000FFF</span></span>
+        <label><input id="spikeeppartial" type="checkbox" checked>Keep partial dumps</label>
         <button id="spidumpstart">Start Dump</button>
         <button id="spidumpstop">Stop Dump</button>
       </div>
@@ -313,6 +314,7 @@
       <div class="dbar">
         <div class="dumpmeta" id="spidumplabel">Progress: 0 / 0 bytes (0%)</div>
         <div class="dumprate" id="spidumprate">Rate: --</div>
+        <div class="dumprate" id="spiverifystat">Verify: off</div>
         <progress id="spidumpprogress" class="prog" value="0" max="100"></progress>
         <div id="spilasthex">last dump bytes will appear here</div>
       </div>
@@ -434,6 +436,7 @@
     const spiStartAddr=document.getElementById('spistartaddr');
     const spiDispLen=document.getElementById('spidisplen');
     const spiDumpLen=document.getElementById('spidumplen');
+    const spiKeepPartial=document.getElementById('spikeeppartial');
     const spiDumpChunk=document.getElementById('spidumpchunk');
     const spiDumpRows=document.getElementById('spidumprows');
     const spiDumpDbl=document.getElementById('spidumpdbl');
@@ -452,6 +455,7 @@
     const sniffOfEl=document.getElementById('sniffof');
     const spiDumpLabel=document.getElementById('spidumplabel');
     const spiDumpRate=document.getElementById('spidumprate');
+    const spiVerifyStat=document.getElementById('spiverifystat');
     const spiDumpProgress=document.getElementById('spidumpprogress');
     const spiDispRange=document.getElementById('spidisprange');
     const spiDumpRange=document.getElementById('spidumprange');
@@ -558,6 +562,11 @@
     let dumpLastRateBytes=0;
     let dumpRateEma=0;
     let dumpUiTimer=null;
+    let verifyFailCount=0;
+    let verifyPassCount=0;
+    let verifyMaxRetriesCfg=0;
+    let verifyRetryUsedLast=0;
+    let verifyRetryUsedMax=0;
     let flashCapacityBytes=0;
     let rxMonEdgesTotal=0;
     let rxMonLastBaud=0;
@@ -574,6 +583,24 @@
     const WS_CH_UART=0x01;
     const WS_CH_SPI_DUMP_DATA=0x02;
     const WS_CH_SPI_DUMP_FF=0x03;
+
+    function renderVerifyStatus(){
+      if(!spiDumpDbl.checked){
+        spiVerifyStat.textContent='Verify: off';
+        return;
+      }
+      spiVerifyStat.textContent='Verify: fails '+verifyFailCount+' | pass '+verifyPassCount+
+        ' | retries used last/max '+verifyRetryUsedLast+'/'+verifyRetryUsedMax+
+        ' of max '+verifyMaxRetriesCfg;
+    }
+    function resetVerifyStatus(){
+      verifyFailCount=0;
+      verifyPassCount=0;
+      verifyMaxRetriesCfg=parseNum(spiDumpRetry.value,0);
+      verifyRetryUsedLast=0;
+      verifyRetryUsedMax=0;
+      renderVerifyStatus();
+    }
 
     function markDirty(v){if(v){applyBtn.classList.add('pending');dirty.classList.add('show');}else{applyBtn.classList.remove('pending');dirty.classList.remove('show');}}
     function setChangedText(el,val,fresh){
@@ -965,29 +992,55 @@
         return true;
       }
       if(m.type==='spi.dump.verify'){
-        if(m.ok){spiLog('[dump.verify] ok','ok');}
+        if(m.ok){
+          verifyPassCount++;
+          verifyRetryUsedLast=0;
+          renderVerifyStatus();
+          spiLog('[dump.verify] ok','ok');
+        }
         else if((m.reason||'')==='mismatch'){
+          const attempts=parseNum(m.attempts,1);
+          const used=Math.max(0,attempts-1);
+          verifyFailCount++;
+          verifyRetryUsedLast=used;
+          if(used>verifyRetryUsedMax)verifyRetryUsedMax=used;
+          renderVerifyStatus();
           const addr=(typeof m.address==='number')?hex32(m.address>>>0):'--';
           const idx=parseNum(m.index,0);
           const exp=(typeof m.expected==='number')?hexByte(m.expected):'--';
           const act=(typeof m.actual==='number')?hexByte(m.actual):'--';
-          const at=parseNum(m.attempts,0);
+          const at=attempts;
           spiLog('[dump.verify] mismatch @ '+addr+' idx '+idx+' exp '+exp+' got '+act+' attempts '+at,'err');
         }else if((m.reason||'')==='read2_failed'){
-          spiLog('[dump.verify] second read failed at offset '+parseNum(m.offset,0)+' attempts '+parseNum(m.attempts,0),'err');
+          const attempts=parseNum(m.attempts,1);
+          const used=Math.max(0,attempts-1);
+          verifyFailCount++;
+          verifyRetryUsedLast=used;
+          if(used>verifyRetryUsedMax)verifyRetryUsedMax=used;
+          renderVerifyStatus();
+          spiLog('[dump.verify] second read failed at offset '+parseNum(m.offset,0)+' attempts '+attempts,'err');
         }else{
+          verifyFailCount++;
+          renderVerifyStatus();
           spiLog('[dump.verify] '+JSON.stringify(m),'err');
         }
         return true;
       }
       if(m.type==='spi.dump.status'){
         const stt=m.state||'status';
+        const detail=(m.detail||'');
         spiSt.textContent=stt;spiSt.className='ok';spiLog('[spi.dump.status] '+JSON.stringify(m));
-        spiDump.textContent='dump: '+stt+(m.detail?(' ('+m.detail+')'):'');
+        spiDump.textContent='dump: '+stt+(detail?(' ('+detail+')'):'');
         if(stt==='running'){dumpSessionActive=true;dumpDownloaded=false;}
         if(stt==='complete'&&dumpSessionActive){if(dumpStoreRaw)dumpDownload(false);dumpSessionActive=false;displayMode=false;displayStopSent=false;spiDumpRate.textContent='Rate: complete';}
-        if(stt==='stopped'&&dumpSessionActive){if(dumpStoreRaw)dumpDownload(true);dumpSessionActive=false;displayMode=false;displayStopSent=false;spiDumpRate.textContent='Rate: stopped';}
-        if(stt==='error'){dumpSessionActive=false;displayMode=false;displayStopSent=false;spiDumpRate.textContent='Rate: error';}
+        if(stt==='stopped'&&dumpSessionActive){
+          if(dumpStoreRaw&&spiKeepPartial.checked)dumpDownload(true);
+          dumpSessionActive=false;displayMode=false;displayStopSent=false;spiDumpRate.textContent='Rate: stopped';
+        }
+        if(stt==='error'){
+          if(dumpSessionActive&&dumpStoreRaw&&spiKeepPartial.checked&&/double-read/i.test(detail))dumpDownload(true);
+          dumpSessionActive=false;displayMode=false;displayStopSent=false;spiDumpRate.textContent='Rate: error';
+        }
         return true;
       }
       return false;
@@ -1097,11 +1150,15 @@
     sfdpReadBtn.onclick=()=>{spiSend('spi.sfdp.read',{length:parseNum(sfdpLen.value,256)});};
     spiStatusReadBtn.onclick=()=>{spiSend('spi.status.read');};
     spiDumpRows.addEventListener('input',renderDumpRecent);
+    spiDumpDbl.addEventListener('change',renderVerifyStatus);
+    spiDumpRetry.addEventListener('input',()=>{verifyMaxRetriesCfg=parseNum(spiDumpRetry.value,0);renderVerifyStatus();});
+    spiDumpRetry.addEventListener('change',()=>{verifyMaxRetriesCfg=parseNum(spiDumpRetry.value,0);renderVerifyStatus();});
     [spiStartAddr,spiDispLen,spiDumpLen].forEach(el=>{el.addEventListener('input',updateReadRanges);el.addEventListener('change',updateReadRanges);});
     function startRead(toFile){
       const startAddr=parseHexU32(spiStartAddr.value,0);
       dumpExpectedBytes=Math.max(1,toFile?parseNum(spiDumpLen.value,4096):parseNum(spiDispLen.value,8388608));
       dumpCapturedBytes=0;dumpRawChunks=[];dumpRecent=[];dumpDownloaded=false;dumpSessionActive=true;dumpStoreRaw=toFile;
+      resetVerifyStatus();
       displayMode=!toFile;
       displayStopSent=false;
       dumpStartMs=0;dumpLastRateMs=0;dumpLastRateBytes=0;dumpRateEma=0;
@@ -1146,6 +1203,7 @@
     resetPinUi();
     resetSnifferUi();
     updateReadRanges();
+    resetVerifyStatus();
     openWs();
     keepCursor();
   </script>
