@@ -1080,10 +1080,24 @@ void proto_spi_poll(void) {
       uint32_t vlen = n_send;
       uint32_t attempt = 0;
       bool match = false;
+      bool last_ok2 = false;
+      uint32_t mismatch_idx = 0u;
+      uint8_t exp_b = 0u;
+      uint8_t got_b = 0u;
       if (vlen > SPI_DUMP_VERIFY_MAX_BYTES) vlen = SPI_DUMP_VERIFY_MAX_BYTES;
       for (attempt = 0; attempt <= g_spi.dump_verify_retries; attempt++) {
         bool ok2 = read_flash_region(g_spi.dump_start_addr + g_spi.dump_sent_bytes, g_spi.dump_read_cmd, g_spi.dump_addr_bytes, g_spi.dump_chk, vlen);
+        last_ok2 = ok2;
         match = ok2 && (memcmp(g_spi.dump_buf, g_spi.dump_chk, vlen) == 0);
+        if (ok2 && !match) {
+          for (mismatch_idx = 0u; mismatch_idx < vlen; mismatch_idx++) {
+            if (g_spi.dump_buf[mismatch_idx] != g_spi.dump_chk[mismatch_idx]) {
+              exp_b = g_spi.dump_buf[mismatch_idx];
+              got_b = g_spi.dump_chk[mismatch_idx];
+              break;
+            }
+          }
+        }
         if (match) break;
       }
       if (match) {
@@ -1092,13 +1106,39 @@ void proto_spi_poll(void) {
           (void)app_send_text("{\"type\":\"spi.dump.verify\",\"ok\":true}");
         }
       } else {
-        (void)app_send_text("{\"type\":\"spi.dump.verify\",\"ok\":false}");
+        char vmsg[320];
+        uint32_t abs_addr = g_spi.dump_start_addr + g_spi.dump_sent_bytes + mismatch_idx;
+        if (!last_ok2) {
+          snprintf(vmsg, sizeof(vmsg),
+                   "{\"type\":\"spi.dump.verify\",\"ok\":false,\"reason\":\"read2_failed\",\"offset\":%lu,\"length\":%lu,\"attempts\":%lu}",
+                   (unsigned long)(g_spi.dump_sent_bytes), (unsigned long)vlen,
+                   (unsigned long)(attempt + 1u));
+        } else {
+          snprintf(vmsg, sizeof(vmsg),
+                   "{\"type\":\"spi.dump.verify\",\"ok\":false,\"reason\":\"mismatch\",\"offset\":%lu,\"address\":%lu,"
+                   "\"index\":%lu,\"expected\":%u,\"actual\":%u,\"length\":%lu,\"attempts\":%lu}",
+                   (unsigned long)(g_spi.dump_sent_bytes), (unsigned long)abs_addr,
+                   (unsigned long)mismatch_idx, (unsigned)exp_b, (unsigned)got_b,
+                   (unsigned long)vlen, (unsigned long)(attempt + 1u));
+        }
+        (void)app_send_text(vmsg);
       }
       if (!match) {
+        char detail[192];
         g_spi.dump_enabled = false;
         spi_release_master();
         spi_dbg(1, "dump verify mismatch");
-        send_spi_status("error", "double-read mismatch");
+        if (!last_ok2) {
+          snprintf(detail, sizeof(detail), "double-read failed (2nd read failed, attempts=%lu)",
+                   (unsigned long)(attempt + 1u));
+        } else {
+          uint32_t abs_addr = g_spi.dump_start_addr + g_spi.dump_sent_bytes + mismatch_idx;
+          snprintf(detail, sizeof(detail),
+                   "double-read mismatch @0x%08lX idx=%lu exp=%02X got=%02X attempts=%lu",
+                   (unsigned long)abs_addr, (unsigned long)mismatch_idx, (unsigned)exp_b,
+                   (unsigned)got_b, (unsigned long)(attempt + 1u));
+        }
+        send_spi_status("error", detail);
         send_spi_state();
         return;
       }
