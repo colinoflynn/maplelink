@@ -51,6 +51,7 @@ target_sources(picowebserverspi PUBLIC
   ${CMAKE_CURRENT_LIST_DIR}/src/proto_uart.c
   ${CMAKE_CURRENT_LIST_DIR}/src/proto_spi.c
   ${CMAKE_CURRENT_LIST_DIR}/src/proto_i2c.c
+  ${CMAKE_CURRENT_LIST_DIR}/src/proto_emmc.c
   ${CMAKE_CURRENT_LIST_DIR}/src/http_custom_files.c
   ${CMAKE_CURRENT_LIST_DIR}/src/xterm_assets.c
   )

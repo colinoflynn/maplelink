@@ -9,6 +9,7 @@
 #include "pico/bootrom.h"
 #include "pico/stdlib.h"
 #include "proto_i2c.h"
+#include "proto_emmc.h"
 #include "proto_spi.h"
 #include "proto_uart.h"
 
@@ -114,6 +115,7 @@ static bool dispatch_text(const char *type, const char *json) {
   if (proto_uart_handle_text(type, json)) return true;
   if (proto_spi_handle_text(type, json)) return true;
   if (proto_i2c_handle_text(type, json)) return true;
+  if (proto_emmc_handle_text(type, json)) return true;
   return false;
 }
 
@@ -121,7 +123,7 @@ static void send_hello(void) {
   char out[224];
   snprintf(out, sizeof(out),
            "{\"type\":\"hello\",\"fw\":\"0.2.0\",\"build_date\":\"%s\",\"build_time\":\"%s\","
-           "\"caps\":[\"uart0\",\"spi0\",\"i2c0\",\"bootsel\",\"debug\"]}",
+           "\"caps\":[\"uart0\",\"spi0\",\"i2c0\",\"emmc0\",\"bootsel\",\"debug\"]}",
            __DATE__, __TIME__);
   (void)app_send_text(out);
 }
@@ -133,6 +135,7 @@ static void on_open(ws_conn_t *conn) {
   proto_uart_on_client_open(conn);
   proto_spi_on_client_open(conn);
   proto_i2c_on_client_open(conn);
+  proto_emmc_on_client_open(conn);
   send_hello();
 }
 
@@ -140,6 +143,7 @@ static void on_close(ws_conn_t *conn) {
   proto_uart_on_client_close(conn);
   proto_spi_on_client_close(conn);
   proto_i2c_on_client_close(conn);
+  proto_emmc_on_client_close(conn);
 
   if (g_client == conn) g_client = NULL;
 }
@@ -190,6 +194,7 @@ const ws_app_handler_t *app_router_handler(void) {
     proto_uart_init();
     proto_spi_init();
     proto_i2c_init();
+    proto_emmc_init();
     inited = true;
   }
 
@@ -206,4 +211,5 @@ void app_router_poll(void) {
   proto_uart_poll();
   proto_spi_poll();
   proto_i2c_poll();
+  proto_emmc_poll();
 }

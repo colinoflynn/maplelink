@@ -46,6 +46,14 @@ Some test on my computer:
 
 ## Usage Directions
 
+### Terminal Usage
+
+### SPI Dump: Basic Usage
+
+### SPI Dump: Detecting Conflicting Access
+
+### SPI Raw Packet Mode
+
 ## Developer Notes
 
 Some notes for either the human or clanker working on this thing.

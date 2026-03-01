@@ -76,6 +76,7 @@
     .prog { width:100%; height:14px; }
     #spilasthex { margin-top:8px; border:1px solid #334155; background:#0a1222; border-radius:6px; padding:8px; color:#93c5fd; font-size:12px; white-space:pre; overflow:auto; max-height:220px; }
     #spidump { color:#93c5fd; font-size:12px; }
+    #emmcout { height:320px; min-height:180px; overflow:auto; padding:10px; white-space:pre-wrap; border-top:1px solid #1f2937; color:#cbd5e1; }
     .rawrow { display:grid; grid-template-columns:minmax(260px,1fr) auto auto; gap:8px; align-items:center; margin-bottom:6px; }
     .rawrow input[type="text"] { width:100%; }
     #rawout { height:calc(100vh - 280px); overflow:auto; padding:10px; white-space:pre-wrap; border-top:1px solid #1f2937; color:#cbd5e1; background:#0a1222; }
@@ -86,6 +87,7 @@
     <button id="tabTerm" class="tabbtn active">Terminal</button>
     <button id="tabSpi" class="tabbtn">SPI FLASH</button>
     <button id="tabRaw" class="tabbtn">SPI RAW</button>
+    <button id="tabEmmc" class="tabbtn">eMMC</button>
     <button id="tabDebug" class="tabbtn">DEBUG</button>
   </div>
 
@@ -323,6 +325,68 @@
     <div id="spiout"></div>
   </div>
 
+  <div id="emmcPanel" class="hidden">
+    <div class="group">
+      <div class="gtitle">Safety and Link</div>
+      <div class="grow">
+        <label><input id="emmctristate" type="checkbox" checked>Tri-state by default</label>
+        <label><input id="emmcpullups" type="checkbox" checked>Pull-ups enabled</label>
+        <button id="emmcapplyio">Apply I/O Safety</button>
+        <button id="emmccfg">Get eMMC Config</button>
+        <label>Speed <select id="emmcspeed">
+          <option value="100000">100 kHz</option>
+          <option value="400000" selected>400 kHz</option>
+          <option value="1000000">1 MHz</option>
+          <option value="2000000">2 MHz</option>
+        </select></label>
+        <button id="emmcsetspeed">Apply Speed</button>
+        <span id="emmcst" class="dim">idle</span>
+      </div>
+      <div class="dim">Pins: CMD=<span id="emmcmapcmd">GPIO10</span>, CLK=<span id="emmcmapclk">GPIO11</span>, DAT0=<span id="emmcmapdat0">GPIO12</span></div>
+    </div>
+    <div class="group">
+      <div class="gtitle">Pin Monitor</div>
+      <div class="grow">
+        <button id="emmcdetectstart">Start Pin Detect</button>
+        <button id="emmcdetectstop">Stop Pin Detect</button>
+        <button id="emmccmdtest">CMD Test Waveform</button>
+        <button id="emmccmd1test">CMD1 Sequence Test</button>
+        <button id="emmcsdtest">SD Init Test</button>
+      </div>
+      <div class="bar" id="emmcpins">
+        <div class="pinrow"><div>CMD</div><div id="emmc-pin-cmd-state" class="pstate p-na">N/A</div><div id="emmc-pin-cmd-rate" class="prate">--</div><div class="pbar"><div id="emmc-pin-cmd-bar" class="pbarfill"></div></div></div>
+        <div class="pinrow"><div>CLK</div><div id="emmc-pin-clk-state" class="pstate p-na">N/A</div><div id="emmc-pin-clk-rate" class="prate">--</div><div class="pbar"><div id="emmc-pin-clk-bar" class="pbarfill"></div></div></div>
+        <div class="pinrow"><div>DAT0</div><div id="emmc-pin-dat0-state" class="pstate p-na">N/A</div><div id="emmc-pin-dat0-rate" class="prate">--</div><div class="pbar"><div id="emmc-pin-dat0-bar" class="pbarfill"></div></div></div>
+      </div>
+    </div>
+    <div class="group">
+      <div class="gtitle">ID Poll (Wiring/Conflict Check)</div>
+      <div class="grow">
+        <label>ID Interval ms <input id="emmcidint" type="number" min="100" max="5000" step="100" value="500"></label>
+        <label><input id="emmcidmon" type="checkbox" checked>Monitor activity between polls</label>
+        <button id="emmcidstart">Start ID Poll</button>
+        <button id="emmcidstop">Stop ID Poll</button>
+        <span class="dim">Poll count: <span id="emmcidcount">0</span></span>
+        <span id="emmcidlive" class="livepill live-off">STOPPED</span>
+      </div>
+      <div class="idbox">
+        <div class="idgrid">
+          <div class="idlbl">Last ID Result</div><div class="idval" id="emmcidlast">--</div>
+          <div class="idlbl">MID/OID</div><div class="idval" id="emmcidmid">--</div>
+          <div class="idlbl">PNM/PRV</div><div class="idval" id="emmcidpnm">--</div>
+          <div class="idlbl">PSN</div><div class="idval" id="emmcidpsn">--</div>
+          <div class="idlbl">OCR Flags</div><div class="idval" id="emmcoflags">--</div>
+          <div class="idlbl">Addressing</div><div class="idval" id="emmcaddrmode">--</div>
+          <div class="idlbl">CSD Summary</div><div class="idval" id="emmccsdsum">--</div>
+          <div class="idlbl">Dump Readiness</div><div class="idval" id="emmcdumpready">--</div>
+          <div class="idlbl">Between Polls</div><div class="idval" id="emmcidwindow">--</div>
+          <div class="idlbl">Window Activity</div><div class="idval" id="emmcidtr">--</div>
+        </div>
+      </div>
+    </div>
+    <div id="emmcout"></div>
+  </div>
+
   <div id="rawPanel" class="hidden">
     <div class="group">
       <div class="gtitle">SPI Raw Commands</div>
@@ -389,10 +453,12 @@
     const shell=document.getElementById('shell');
     const terminalPanel=document.getElementById('terminalPanel');
     const spiPanel=document.getElementById('spiPanel');
+    const emmcPanel=document.getElementById('emmcPanel');
     const rawPanel=document.getElementById('rawPanel');
     const debugPanel=document.getElementById('debugPanel');
     const tabTerm=document.getElementById('tabTerm');
     const tabSpi=document.getElementById('tabSpi');
+    const tabEmmc=document.getElementById('tabEmmc');
     const tabRaw=document.getElementById('tabRaw');
     const tabDebug=document.getElementById('tabDebug');
     const bootselBtn=document.getElementById('bootsel');
@@ -446,6 +512,38 @@
     const spiDump=document.getElementById('spidump');
     const spiSt=document.getElementById('spist');
     const spiOut=document.getElementById('spiout');
+    const emmcCfgBtn=document.getElementById('emmccfg');
+    const emmcApplyIoBtn=document.getElementById('emmcapplyio');
+    const emmcSetSpeedBtn=document.getElementById('emmcsetspeed');
+    const emmcDetectStartBtn=document.getElementById('emmcdetectstart');
+    const emmcDetectStopBtn=document.getElementById('emmcdetectstop');
+    const emmcCmdTestBtn=document.getElementById('emmccmdtest');
+    const emmcCmd1TestBtn=document.getElementById('emmccmd1test');
+    const emmcSdTestBtn=document.getElementById('emmcsdtest');
+    const emmcIdStartBtn=document.getElementById('emmcidstart');
+    const emmcIdStopBtn=document.getElementById('emmcidstop');
+    const emmcTriState=document.getElementById('emmctristate');
+    const emmcPullups=document.getElementById('emmcpullups');
+    const emmcSpeed=document.getElementById('emmcspeed');
+    const emmcIdInt=document.getElementById('emmcidint');
+    const emmcIdMon=document.getElementById('emmcidmon');
+    const emmcSt=document.getElementById('emmcst');
+    const emmcOut=document.getElementById('emmcout');
+    const emmcMapCmd=document.getElementById('emmcmapcmd');
+    const emmcMapClk=document.getElementById('emmcmapclk');
+    const emmcMapDat0=document.getElementById('emmcmapdat0');
+    const emmcIdCountEl=document.getElementById('emmcidcount');
+    const emmcIdLiveEl=document.getElementById('emmcidlive');
+    const emmcIdLastEl=document.getElementById('emmcidlast');
+    const emmcIdMidEl=document.getElementById('emmcidmid');
+    const emmcIdPnmEl=document.getElementById('emmcidpnm');
+    const emmcIdPsnEl=document.getElementById('emmcidpsn');
+    const emmcOcrFlagsEl=document.getElementById('emmcoflags');
+    const emmcAddrModeEl=document.getElementById('emmcaddrmode');
+    const emmcCsdSumEl=document.getElementById('emmccsdsum');
+    const emmcDumpReadyEl=document.getElementById('emmcdumpready');
+    const emmcIdWindowEl=document.getElementById('emmcidwindow');
+    const emmcIdTrEl=document.getElementById('emmcidtr');
     const rawOut=document.getElementById('rawout');
     const rawCmds=document.getElementById('rawcmds');
     const sniffView=document.getElementById('sniffview');
@@ -496,6 +594,11 @@
       cs:{state:document.getElementById('pin-cs-state'),rate:document.getElementById('pin-cs-rate'),bar:document.getElementById('pin-cs-bar')},
       clk:{state:document.getElementById('pin-clk-state'),rate:document.getElementById('pin-clk-rate'),bar:document.getElementById('pin-clk-bar')}
     };
+    const emmcPinUi={
+      cmd:{state:document.getElementById('emmc-pin-cmd-state'),rate:document.getElementById('emmc-pin-cmd-rate'),bar:document.getElementById('emmc-pin-cmd-bar')},
+      clk:{state:document.getElementById('emmc-pin-clk-state'),rate:document.getElementById('emmc-pin-clk-rate'),bar:document.getElementById('emmc-pin-clk-bar')},
+      dat0:{state:document.getElementById('emmc-pin-dat0-state'),rate:document.getElementById('emmc-pin-dat0-rate'),bar:document.getElementById('emmc-pin-dat0-bar')}
+    };
     const st=document.getElementById('st');
     const applyBtn=document.getElementById('apply');
     const dirty=document.getElementById('dirty');
@@ -544,7 +647,9 @@
     const sgr={bold:false,fg:'',bg:''};
     let activeTab='terminal';
     let pinPrevTs=0;
+    let emmcPinPrevTs=0;
     let pinPrevTr={mosi:0,miso:0,cs:0,clk:0};
+    let emmcPinPrevTr={cmd:0,clk:0,dat0:0};
     let dumpExpectedBytes=0;
     let dumpCapturedBytes=0;
     let dumpRawChunks=[];
@@ -576,6 +681,9 @@
     let sniffOverflow=false;
     let sniffOffset=0;
     let sniffLines=[];
+    let emmcIdCount=0;
+    let emmcDetectActive=false;
+    let emmcIdPollActive=false;
     const MAX_SPI_LOG_LINES=300;
     const MAX_DBG_LOG_LINES=600;
     const MAX_SNIFF_LINES=240;
@@ -614,7 +722,7 @@
         el.classList.add('live-pulse');
       }
     }
-    function setTab(tab){activeTab=tab;const t=tab==='terminal';const s=tab==='spi';const r=tab==='raw';const d=tab==='debug';terminalPanel.classList.toggle('hidden',!t);spiPanel.classList.toggle('hidden',!s);rawPanel.classList.toggle('hidden',!r);debugPanel.classList.toggle('hidden',!d);tabTerm.classList.toggle('active',t);tabSpi.classList.toggle('active',s);tabRaw.classList.toggle('active',r);tabDebug.classList.toggle('active',d);if(t)term.focus();layoutTerminalShell();layoutSpiLog();}
+    function setTab(tab){activeTab=tab;const t=tab==='terminal';const s=tab==='spi';const e=tab==='emmc';const r=tab==='raw';const d=tab==='debug';terminalPanel.classList.toggle('hidden',!t);spiPanel.classList.toggle('hidden',!s);emmcPanel.classList.toggle('hidden',!e);rawPanel.classList.toggle('hidden',!r);debugPanel.classList.toggle('hidden',!d);tabTerm.classList.toggle('active',t);tabSpi.classList.toggle('active',s);tabEmmc.classList.toggle('active',e);tabRaw.classList.toggle('active',r);tabDebug.classList.toggle('active',d);if(t)term.focus();layoutTerminalShell();layoutSpiLog();layoutEmmcLog();}
     function setIdPollLive(active){
       idPollActive=!!active;
       idPollLiveEl.textContent=idPollActive?'ACTIVE':'STOPPED';
@@ -641,8 +749,15 @@
       const avail=window.innerHeight-rect.top-8;
       spiOut.style.height=Math.max(180,avail)+'px';
     }
+    function layoutEmmcLog(){
+      if(!emmcOut||emmcPanel.classList.contains('hidden'))return;
+      const rect=emmcOut.getBoundingClientRect();
+      const avail=window.innerHeight-rect.top-8;
+      emmcOut.style.height=Math.max(180,avail)+'px';
+    }
     function appendLogLine(host,maxLines,s,cls){const line=document.createElement('div');if(cls)line.className=cls;line.textContent=s;host.appendChild(line);while(host.childElementCount>maxLines)host.removeChild(host.firstChild);host.scrollTop=host.scrollHeight;}
     function spiLog(s,cls){appendLogLine(spiOut,MAX_SPI_LOG_LINES,s,cls);}
+    function emmcLog(s,cls){appendLogLine(emmcOut,MAX_SPI_LOG_LINES,s,cls);}
     function dbgLog(s,cls){appendLogLine(dbgOut,MAX_DBG_LOG_LINES,s,cls);}
     function rawLog(s,cls){appendLogLine(rawOut,MAX_SPI_LOG_LINES,s,cls);}
     function fmtNs(ns){const n=parseNum(ns,0);if(!n)return'--';if(n<1000)return n+' ns';const us=n/1000;return us.toFixed(us>=100?1:2)+' us';}
@@ -666,6 +781,7 @@
       });
     }
     function spiSend(type,obj){const m=Object.assign({type:type,port:'spi0'},obj||{});send(m);}
+    function emmcSend(type,obj){const m=Object.assign({type:type,port:'emmc0'},obj||{});send(m);}
     function setRxMonUi(m){
       if(typeof m.enabled==='boolean')rxMonEn.checked=m.enabled;
       const edges=parseNum(m.edges,0);
@@ -679,10 +795,75 @@
     function parseNum(s,def){const n=parseInt(String(s||''),10);return Number.isFinite(n)?n:def;}
     function parseHexU32(s,def){let t=String(s||'').trim().toLowerCase();if(t.startsWith('0x'))t=t.slice(2);if(!/^[0-9a-f]{1,8}$/.test(t))return def>>>0;return (parseInt(t,16)>>>0);}
     function hex32(v){return '0x'+((v>>>0).toString(16).toUpperCase().padStart(8,'0'));}
+    function hex4(v){return ((v>>>0)&0xFFFF).toString(16).toUpperCase().padStart(4,'0');}
     function le16(b,i){return (b[i]|(b[i+1]<<8))>>>0;}
     function le32(b,i){return (b[i]|(b[i+1]<<8)|(b[i+2]<<16)|(b[i+3]<<24))>>>0;}
     function parseHexByte(s,def){let t=String(s||'').trim().toLowerCase();if(t.startsWith('0x'))t=t.slice(2);if(!/^[0-9a-f]{1,2}$/.test(t))return def;return parseInt(t,16);}
     function hexByte(v){return '0x'+(v&255).toString(16).toUpperCase().padStart(2,'0');}
+    function parseHexBytesExact(s,need){
+      const b=parseHexBytesLoose(s||'');
+      if(need&&b.length!==need)return null;
+      return b;
+    }
+    function asciiLoose(bytes){
+      if(!bytes||!bytes.length)return '--';
+      let out='';
+      for(const v of bytes){
+        out+=(v>=32&&v<=126)?String.fromCharCode(v):'.';
+      }
+      return out;
+    }
+    function decodeEmmcCid(cidHex){
+      const b=parseHexBytesExact(cidHex,15);
+      if(!b)return null;
+      const mid=b[0];
+      const oid=((b[1]<<8)|b[2])>>>0;
+      const pnmBytes=b.slice(3,9);
+      const pnm=asciiLoose(pnmBytes);
+      const prvRaw=b[9];
+      const prv=((prvRaw>>4)&0x0F)+'.'+(prvRaw&0x0F);
+      const psn=((b[10]<<24)|(b[11]<<16)|(b[12]<<8)|b[13])>>>0;
+      const tail=b[14];
+      return {
+        mid:mid,
+        oid:oid,
+        pnm:pnm,
+        prv:prv,
+        psn:psn,
+        tail:tail
+      };
+    }
+    function decodeEmmcCsdSummary(csdHex){
+      const b=parseHexBytesExact(csdHex,15);
+      if(!b)return '--';
+      const csdStruct=(b[0]>>6)&0x03;
+      const specVers=(b[0]>>2)&0x0F;
+      const tranSpeed=b[3];
+      const readBlLen=(b[5]>>4)&0x0F;
+      return 'CSD_STRUCT '+csdStruct+', SPEC_VERS '+specVers+', TRAN_SPEED '+hexByte(tranSpeed)+', READ_BL_LEN '+readBlLen;
+    }
+    function decodeOcrFlags(ocr){
+      const v=(parseNum(ocr,0)>>>0);
+      const ready=((v&0x80000000)!==0);
+      const hcs=((v&0x40000000)!==0);
+      const p18=((v&0x01000000)!==0);
+      const p30=((v&0x00200000)!==0);
+      const p33=((v&0x00800000)!==0);
+      return 'ready='+(ready?'yes':'no')+', high_capacity='+(hcs?'yes':'no')+
+        ', 1.8V='+(p18?'yes':'no')+', 3.0V='+(p30?'yes':'no')+', 3.3V='+(p33?'yes':'no');
+    }
+    function emmcAddressModeText(ocr){
+      const v=(parseNum(ocr,0)>>>0);
+      return ((v&0x40000000)!==0)?'Block addressing (likely 512-byte sectors)':'Byte addressing (legacy)';
+    }
+    function emmcDumpReadinessText(m){
+      const ocr=(parseNum(m.ocr,0)>>>0);
+      const ready=((ocr&0x80000000)!==0);
+      const hc=((ocr&0x40000000)!==0);
+      if(!ready)return 'Not ready: OCR busy bit not set';
+      const mode=hc?'HC/block':'legacy/byte';
+      return 'Path alive ('+mode+'). For safe full dump still need EXT_CSD: SEC_COUNT, PARTITION_CONFIG, BOOT_SIZE_MULT, HC_ERASE_GRP_SIZE.';
+    }
     function setLikelyAddrBytesFromCapacity(bytes){
       if(!(bytes>0))return;
       const next=(bytes>0x1000000)?4:3;
@@ -826,8 +1007,8 @@
       }
       return {mfg:jedecMfgName(m)+' ('+hex2(m)+')',type:hex2(t),cap:cap,summary:jedecMfgName(m)+' '+hex2(t)+' '+hex2(c),bytes:bytesN};
     }
-    function setPinUi(pin,level,available,delta,dtMs){
-      const u=pinUi[pin];if(!u)return;
+    function setPinUiFor(ui,pin,level,available,delta,dtMs){
+      const u=ui[pin];if(!u)return;
       const base='pstate ';
       if(!available){u.state.textContent='N/A';u.state.className=base+'p-na';u.rate.textContent='--';u.bar.style.width='0%';return;}
       const hz=(dtMs>0&&delta>0)?(delta*1000/dtMs):0;
@@ -839,6 +1020,12 @@
       const norm=Math.min(1,Math.log10(hz+1)/5); // 100 kHz ~= full scale
       u.bar.style.width=Math.round(norm*100)+'%';
     }
+    function setPinUi(pin,level,available,delta,dtMs){
+      setPinUiFor(pinUi,pin,level,available,delta,dtMs);
+    }
+    function setEmmcPinUi(pin,level,available,delta,dtMs){
+      setPinUiFor(emmcPinUi,pin,level,available,delta,dtMs);
+    }
     function resetPinUi(){
       setPinUi('mosi',0,false,0,0);
       setPinUi('miso',0,false,0,0);
@@ -846,6 +1033,131 @@
       setPinUi('clk',0,false,0,0);
       pinPrevTs=0;
       pinPrevTr={mosi:0,miso:0,cs:0,clk:0};
+    }
+    function resetEmmcPinUi(){
+      setEmmcPinUi('cmd',0,false,0,0);
+      setEmmcPinUi('clk',0,false,0,0);
+      setEmmcPinUi('dat0',0,false,0,0);
+      emmcPinPrevTs=0;
+      emmcPinPrevTr={cmd:0,clk:0,dat0:0};
+    }
+    function setEmmcLive(active){
+      emmcIdLiveEl.textContent=active?'ACTIVE':'STOPPED';
+      emmcIdLiveEl.className='livepill '+(active?'live-on':'live-off');
+    }
+    function handleEmmcMessage(m){
+      if(m.type==='emmc.config'){
+        if(typeof m.tristate_default==='boolean')emmcTriState.checked=m.tristate_default;
+        if(typeof m.pullups_enabled==='boolean')emmcPullups.checked=m.pullups_enabled;
+        if(m.speed_hz)emmcSpeed.value=String(m.speed_hz);
+        if(m.idpoll_interval_ms)emmcIdInt.value=String(m.idpoll_interval_ms);
+        if(typeof m.idpoll_monitor_between==='boolean')emmcIdMon.checked=m.idpoll_monitor_between;
+        if(m.pins){
+          if(typeof m.pins.cmd==='number')emmcMapCmd.textContent='GPIO'+m.pins.cmd;
+          if(typeof m.pins.clk==='number')emmcMapClk.textContent='GPIO'+m.pins.clk;
+          if(typeof m.pins.dat0==='number')emmcMapDat0.textContent='GPIO'+m.pins.dat0;
+        }
+        if(typeof m.detect_enabled==='boolean'){
+          emmcDetectActive=!!m.detect_enabled;
+          if(!emmcDetectActive)resetEmmcPinUi();
+        }
+        if(typeof m.idpoll_enabled==='boolean'){
+          emmcIdPollActive=!!m.idpoll_enabled;
+          setEmmcLive(emmcIdPollActive);
+        }
+        emmcSt.textContent='config loaded';
+        emmcSt.className='ok';
+        emmcLog('[emmc.config] '+JSON.stringify(m));
+        return true;
+      }
+      if(m.type==='emmc.pins'){
+        if(!emmcDetectActive)return true;
+        const tr=m.transitions||{};
+        const now=performance.now();
+        const dt=Math.max(1,emmcPinPrevTs?now-emmcPinPrevTs:0);
+        const d={cmd:(tr.cmd||0)-emmcPinPrevTr.cmd,clk:(tr.clk||0)-emmcPinPrevTr.clk,dat0:(tr.dat0||0)-emmcPinPrevTr.dat0};
+        setEmmcPinUi('cmd',!!m.cmd,true,Math.max(0,d.cmd),dt);
+        setEmmcPinUi('clk',!!m.clk,true,Math.max(0,d.clk),dt);
+        setEmmcPinUi('dat0',!!m.dat0,true,Math.max(0,d.dat0),dt);
+        emmcPinPrevTr={cmd:tr.cmd||0,clk:tr.clk||0,dat0:tr.dat0||0};
+        emmcPinPrevTs=now;
+        return true;
+      }
+      if(m.type==='emmc.id.result'){
+        if(!emmcIdPollActive){
+          emmcLog('[emmc.id late] '+JSON.stringify(m),'dim');
+          return true;
+        }
+        if(typeof m.poll_count==='number')emmcIdCount=m.poll_count;
+        else emmcIdCount++;
+        emmcIdCountEl.textContent=String(emmcIdCount);
+        setEmmcLive(true);
+        if(m.ok){
+          const ocr=(typeof m.ocr==='number')?(' OCR '+hex32(m.ocr)):'';
+          const rca=(typeof m.rca==='number')?(' RCA 0x'+hex4(m.rca)):'';
+          setChangedText(emmcIdLastEl,(m.id_hex||'--')+ocr+rca);
+          const cid=decodeEmmcCid(m.cid||'');
+          if(cid){
+            setChangedText(emmcIdMidEl,hexByte(cid.mid)+' / 0x'+hex4(cid.oid));
+            setChangedText(emmcIdPnmEl,cid.pnm+' / v'+cid.prv);
+            setChangedText(emmcIdPsnEl,hex32(cid.psn)+' (tail '+hexByte(cid.tail)+')');
+          }else{
+            setChangedText(emmcIdMidEl,'--');
+            setChangedText(emmcIdPnmEl,'--');
+            setChangedText(emmcIdPsnEl,'--');
+          }
+          setChangedText(emmcOcrFlagsEl,decodeOcrFlags(m.ocr));
+          setChangedText(emmcAddrModeEl,emmcAddressModeText(m.ocr));
+          setChangedText(emmcCsdSumEl,decodeEmmcCsdSummary(m.csd||''));
+          setChangedText(emmcDumpReadyEl,emmcDumpReadinessText(m));
+        }else{
+          setChangedText(emmcIdLastEl,m.msg||'read failed');
+          setChangedText(emmcIdMidEl,'--');
+          setChangedText(emmcIdPnmEl,'--');
+          setChangedText(emmcIdPsnEl,'--');
+          setChangedText(emmcOcrFlagsEl,'--');
+          setChangedText(emmcAddrModeEl,'--');
+          setChangedText(emmcCsdSumEl,'--');
+          setChangedText(emmcDumpReadyEl,'--');
+        }
+        emmcLog('[emmc.id] '+JSON.stringify(m),m.ok?'ok':'dim');
+        return true;
+      }
+      if(m.type==='emmc.idpoll.window'){
+        if(!emmcIdPollActive)return true;
+        const tr=m.transitions||{};
+        const clear=!!m.clear;
+        setChangedText(emmcIdWindowEl,clear?'CLEAR':'INTERFERENCE');
+        emmcIdWindowEl.className='idval '+(clear?'iw-clear':'iw-bad');
+        setChangedText(emmcIdTrEl,'total '+parseNum(m.total,0)+' (CMD '+parseNum(tr.cmd,0)+', CLK '+parseNum(tr.clk,0)+', DAT0 '+parseNum(tr.dat0,0)+')');
+        return true;
+      }
+      if(m.type==='emmc.cmd_test.result'){
+        emmcSt.textContent='cmd test done';
+        emmcSt.className='ok';
+        emmcLog('[emmc.cmd_test] cycles '+parseNum(m.cycles,0),'ok');
+        return true;
+      }
+      if(m.type==='emmc.cmd1_test.result'){
+        const rr=parseNum(m.responses,0), tr=parseNum(m.retries,0), arg=parseNum(m.arg,0), ocr=parseNum(m.ocr,0)>>>0;
+        const msg='[emmc.cmd1_test] resp '+rr+'/'+tr+' arg '+hex32(arg)+' ocr '+hex32(ocr)+' saw='+!!m.saw_response+' ready='+!!m.ready;
+        emmcSt.textContent=(m.ready?'cmd1 ready':'cmd1 no-ready');
+        emmcSt.className=m.ready?'ok':'dim';
+        emmcLog(msg,m.ready?'ok':'dim');
+        return true;
+      }
+      if(m.type==='emmc.sd_test.result'){
+        const attempts=parseNum(m.attempts,0), arg=parseNum(m.acmd41_arg,0), ocr=parseNum(m.ocr,0)>>>0;
+        const cmd8Echo=parseNum(m.cmd8_echo,0), cmd8r1=parseNum(m.cmd8_r1,0)>>>0;
+        const msg='[emmc.sd_test] cmd8_ok='+!!m.cmd8_ok+' echo='+hexByte(cmd8Echo)+' r1='+hex32(cmd8r1)+
+          ' cmd55='+!!m.cmd55_ok+' acmd41='+!!m.acmd41_ok+' ready='+!!m.ready+
+          ' attempts='+attempts+' arg='+hex32(arg)+' ocr='+hex32(ocr);
+        emmcSt.textContent=(m.ready?'sd ready':'sd no-ready');
+        emmcSt.className=m.ready?'ok':'dim';
+        emmcLog(msg,m.ready?'ok':'dim');
+        return true;
+      }
+      return false;
     }
     function handleSpiMessage(m){
       if(m.type==='spi.config'){
@@ -1084,7 +1396,7 @@
         if(wsReconnectTimer){clearTimeout(wsReconnectTimer);wsReconnectTimer=null;}
         if(wsPingTimer)clearInterval(wsPingTimer);
         wsPingTimer=setInterval(()=>send({type:'ping'}),5000);
-        send({type:'hello'});send({type:'uart.get_config',port:'uart0'});send({type:'uart.rxmon.get'});spiSend('spi.get_config');send({type:'system.get_debug'});term.focus();
+        send({type:'hello'});send({type:'uart.get_config',port:'uart0'});send({type:'uart.rxmon.get'});spiSend('spi.get_config');emmcSend('emmc.get_config');send({type:'system.get_debug'});term.focus();
       };
       ws.onclose=()=>{
         st.textContent='disconnected';st.className='err';
@@ -1096,7 +1408,7 @@
           },1500);
         }
       };
-      ws.onmessage=(e)=>{if(typeof e.data==='string'){try{const m=JSON.parse(e.data);if(m.type==='hello'){aboutFw.textContent=m.fw||'--';aboutBuild.textContent=((m.build_date||'')+' '+(m.build_time||'')).trim()||'--';}else if(m.type==='pong'){}else if(m.type==='uart.config'){if(typeof m.tx_pin==='number'&&typeof m.rx_pin==='number')uartPins.textContent='UART0 pins: TX=GPIO'+m.tx_pin+', RX=GPIO'+m.rx_pin;appendTerm('\n[config '+JSON.stringify(m)+']\n','ok');}else if(m.type==='uart.rxmon'){setRxMonUi(m);}else if(m.type==='system.bootsel'){appendTerm('\n[system entering USB boot mode]\n','ok');spiLog('[system] entering USB boot mode','ok');dbgLog('[system] entering USB boot mode','ok');}else if(m.type==='system.debug'){if(typeof m.level==='number'){dbgLevel.value=String(m.level);dbgStatus.textContent='level '+m.level;}dbgLog('[debug cfg] '+JSON.stringify(m),'dim');}else if(m.type==='debug.log'){dbgLog('L'+(m.level||0)+' '+(m.scope||'sys')+': '+(m.msg||''));}else if(m.type==='error'){appendTerm('\n[error '+(m.msg||'unknown')+']\n','err');dbgLog('[error] '+(m.code||'')+' '+(m.msg||'unknown'),'err');if((m.code||'').startsWith('SPI_')){spiLog('[spi.error] '+(m.msg||m.code),'err');spiDump.textContent='dump: error ('+(m.msg||m.code)+')';}}else if(m.type&&m.type.startsWith('spi.')){if(!handleSpiMessage(m))spiLog('[spi] '+JSON.stringify(m));}else{appendTerm('\n['+e.data+']\n');}}catch(_){appendTerm(e.data);}}else{const b=new Uint8Array(e.data);if(b.length>=2&&b[0]===WS_BIN_MAGIC){const ch=b[1];if(ch===WS_CH_UART){queueRx(b.slice(2));}else if(ch===WS_CH_SPI_DUMP_DATA&&b.length>=8){const off=le32(b,2);const cnt=le16(b,6);const p=b.slice(8,8+cnt);if((off||0)+p.length>dumpExpectedBytes)dumpExpectedBytes=(off||0)+p.length;dumpAppendBytes(p);spiDump.textContent='dump offset '+off+' data '+p.length+' bytes';}else if(ch===WS_CH_SPI_DUMP_FF&&b.length>=8){const off=le32(b,2);const cnt=le16(b,6);if((off||0)+cnt>dumpExpectedBytes)dumpExpectedBytes=(off||0)+cnt;dumpAppendBytes(new Uint8Array(cnt).fill(0xFF));spiDump.textContent='dump offset '+off+' ff-run '+cnt+' bytes';}}else{queueRx(b);}}};
+      ws.onmessage=(e)=>{if(typeof e.data==='string'){try{const m=JSON.parse(e.data);if(m.type==='hello'){aboutFw.textContent=m.fw||'--';aboutBuild.textContent=((m.build_date||'')+' '+(m.build_time||'')).trim()||'--';}else if(m.type==='pong'){}else if(m.type==='uart.config'){if(typeof m.tx_pin==='number'&&typeof m.rx_pin==='number')uartPins.textContent='UART0 pins: TX=GPIO'+m.tx_pin+', RX=GPIO'+m.rx_pin;appendTerm('\n[config '+JSON.stringify(m)+']\n','ok');}else if(m.type==='uart.rxmon'){setRxMonUi(m);}else if(m.type==='system.bootsel'){appendTerm('\n[system entering USB boot mode]\n','ok');spiLog('[system] entering USB boot mode','ok');dbgLog('[system] entering USB boot mode','ok');}else if(m.type==='system.debug'){if(typeof m.level==='number'){dbgLevel.value=String(m.level);dbgStatus.textContent='level '+m.level;}dbgLog('[debug cfg] '+JSON.stringify(m),'dim');}else if(m.type==='debug.log'){dbgLog('L'+(m.level||0)+' '+(m.scope||'sys')+': '+(m.msg||''));}else if(m.type==='error'){appendTerm('\n[error '+(m.msg||'unknown')+']\n','err');dbgLog('[error] '+(m.code||'')+' '+(m.msg||'unknown'),'err');if((m.code||'').startsWith('SPI_')){spiLog('[spi.error] '+(m.msg||m.code),'err');spiDump.textContent='dump: error ('+(m.msg||m.code)+')';}if((m.code||'').startsWith('EMMC_')){emmcLog('[emmc.error] '+(m.msg||m.code),'err');}}else if(m.type&&m.type.startsWith('spi.')){if(!handleSpiMessage(m))spiLog('[spi] '+JSON.stringify(m));}else if(m.type&&m.type.startsWith('emmc.')){if(!handleEmmcMessage(m))emmcLog('[emmc] '+JSON.stringify(m));}else{appendTerm('\n['+e.data+']\n');}}catch(_){appendTerm(e.data);}}else{const b=new Uint8Array(e.data);if(b.length>=2&&b[0]===WS_BIN_MAGIC){const ch=b[1];if(ch===WS_CH_UART){queueRx(b.slice(2));}else if(ch===WS_CH_SPI_DUMP_DATA&&b.length>=8){const off=le32(b,2);const cnt=le16(b,6);const p=b.slice(8,8+cnt);if((off||0)+p.length>dumpExpectedBytes)dumpExpectedBytes=(off||0)+p.length;dumpAppendBytes(p);spiDump.textContent='dump offset '+off+' data '+p.length+' bytes';}else if(ch===WS_CH_SPI_DUMP_FF&&b.length>=8){const off=le32(b,2);const cnt=le16(b,6);if((off||0)+cnt>dumpExpectedBytes)dumpExpectedBytes=(off||0)+cnt;dumpAppendBytes(new Uint8Array(cnt).fill(0xFF));spiDump.textContent='dump offset '+off+' ff-run '+cnt+' bytes';}}else{queueRx(b);}}};
     }
 
     function openWs(){
@@ -1131,6 +1443,7 @@
     hexView.onchange=()=>{if(hexView.checked){shell.classList.add('hex');}else{shell.classList.remove('hex');pendingHexChunks=[];pendingHexBytes=0;if(hexTimer){clearTimeout(hexTimer);hexTimer=null;}}};
     tabTerm.onclick=()=>setTab('terminal');
     tabSpi.onclick=()=>setTab('spi');
+    tabEmmc.onclick=()=>setTab('emmc');
     tabRaw.onclick=()=>setTab('raw');
     tabDebug.onclick=()=>setTab('debug');
     dbgApply.onclick=()=>send({type:'system.set_debug',level:parseNum(dbgLevel.value,1)});
@@ -1147,6 +1460,16 @@
     spiSniffStopBtn.onclick=()=>spiSend('spi.sniffer.stop');
     spiIdStartBtn.onclick=()=>{idPollCount=0;idPollCountEl.textContent='0';setIdPollLive(true);idPollAgeEl.textContent='waiting...';idWindow.textContent='--';idWindow.className='idval';idWinTr.textContent='--';spiSend('spi.idpoll.start',{interval_ms:parseNum(spiIdInt.value,250),speed_hz:parseNum(spiSpeed.value,1000000),monitor_between:spiIdMon.checked});};
     spiIdStopBtn.onclick=()=>{spiSend('spi.idpoll.stop');setIdPollLive(false);idWindow.textContent='--';idWindow.className='idval';idWinTr.textContent='--';resetPinUi();};
+    emmcCfgBtn.onclick=()=>emmcSend('emmc.get_config');
+    emmcApplyIoBtn.onclick=()=>emmcSend('emmc.set_io',{tristate_default:emmcTriState.checked,pullups_enabled:emmcPullups.checked});
+    emmcSetSpeedBtn.onclick=()=>emmcSend('emmc.set_speed',{speed_hz:parseNum(emmcSpeed.value,400000),idpoll_interval_ms:parseNum(emmcIdInt.value,500)});
+    emmcDetectStartBtn.onclick=()=>{emmcDetectActive=true;emmcSend('emmc.detect.start');};
+    emmcDetectStopBtn.onclick=()=>{emmcDetectActive=false;emmcSend('emmc.detect.stop');resetEmmcPinUi();};
+    emmcCmdTestBtn.onclick=()=>{emmcSt.textContent='running cmd test...';emmcSt.className='dim';emmcSend('emmc.cmd_test',{cycles:6});};
+    emmcCmd1TestBtn.onclick=()=>{emmcSt.textContent='running cmd1 test...';emmcSt.className='dim';emmcSend('emmc.cmd1_test',{retries:24,arg:0x40FF8000});};
+    emmcSdTestBtn.onclick=()=>{emmcSt.textContent='running sd test...';emmcSt.className='dim';emmcSend('emmc.sd_test',{retries:32,arg:0x40FF8000});};
+    emmcIdStartBtn.onclick=()=>{emmcIdPollActive=true;emmcIdCount=0;emmcIdCountEl.textContent='0';setEmmcLive(true);setChangedText(emmcIdLastEl,'waiting...');setChangedText(emmcIdMidEl,'--');setChangedText(emmcIdPnmEl,'--');setChangedText(emmcIdPsnEl,'--');setChangedText(emmcOcrFlagsEl,'--');setChangedText(emmcAddrModeEl,'--');setChangedText(emmcCsdSumEl,'--');setChangedText(emmcDumpReadyEl,'--');setChangedText(emmcIdWindowEl,'--');setChangedText(emmcIdTrEl,'--');emmcSend('emmc.idpoll.start',{interval_ms:parseNum(emmcIdInt.value,500),speed_hz:parseNum(emmcSpeed.value,400000),monitor_between:emmcIdMon.checked});};
+    emmcIdStopBtn.onclick=()=>{emmcIdPollActive=false;emmcSend('emmc.idpoll.stop');setEmmcLive(false);setChangedText(emmcIdWindowEl,'--');setChangedText(emmcIdTrEl,'--');setChangedText(emmcDumpReadyEl,'--');resetEmmcPinUi();};
     sfdpReadBtn.onclick=()=>{spiSend('spi.sfdp.read',{length:parseNum(sfdpLen.value,256)});};
     spiStatusReadBtn.onclick=()=>{spiSend('spi.status.read');};
     spiDumpRows.addEventListener('input',renderDumpRecent);
@@ -1194,13 +1517,15 @@
       idPollAgeEl.textContent=(s===0)?'just now':(s+'s ago');
     },500);
     term.addEventListener('keydown',(e)=>{if(decodeMode.value==='vt100')return;if(!ws||ws.readyState!==1)return;if(sendMode.value==='type'){if(e.key==='Enter'){sendBinary(enterBytes());if(localEcho.checked)appendTerm('\n','dim');}else if(e.key==='Backspace'){sendBinary(new Uint8Array([127]));if(localEcho.checked)appendTerm('\b','dim');}else if(e.key.length===1){sendBinary(enc.encode(e.key));if(localEcho.checked)appendTerm(e.key,'dim');}else return;}else{if(e.key==='Enter'){sendTextLine(lineBuf);sendBinary(enterBytes());if(localEcho.checked)appendTerm('\n','dim');lineBuf='';}else if(e.key==='Backspace'){if(lineBuf.length>0)lineBuf=lineBuf.slice(0,-1);}else if(e.key.length===1){lineBuf+=e.key;if(localEcho.checked)appendTerm(e.key,'dim');}else return;}e.preventDefault();});
-    window.addEventListener('resize',()=>{layoutTerminalShell();layoutSpiLog();});
+    window.addEventListener('resize',()=>{layoutTerminalShell();layoutSpiLog();layoutEmmcLog();});
     setTab('terminal');
     layoutTerminalShell();
     layoutSpiLog();
+    layoutEmmcLog();
     syncDecodeMode();
     buildRawRows();
     resetPinUi();
+    resetEmmcPinUi();
     resetSnifferUi();
     updateReadRanges();
     resetVerifyStatus();
