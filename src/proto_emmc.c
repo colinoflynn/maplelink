@@ -50,6 +50,7 @@
 #define EMMC_FULL_REPREPARE_MAX 2u
 #define WS_BIN_MAGIC 0xB0u
 #define WS_CH_EMMC_DUMP_DATA 0x04u
+#define WS_CH_EMMC_DUMP_RUN 0x05u
 
 typedef struct {
   bool tristate_default;
@@ -689,11 +690,13 @@ static bool send_dump_status(const char *state, const char *detail) {
   uint32_t err_pct_x10 = (attempts > 0u) ? (uint32_t)((err * 1000u) / attempts) : 0u;
   snprintf(out, sizeof(out),
            "{\"type\":\"emmc.dump.status\",\"state\":\"%s\",\"detail\":\"%s\","
-           "\"done_blocks\":%lu,\"total_blocks\":%lu,"
+           "\"start_lba\":%lu,\"current_lba\":%lu,\"done_blocks\":%lu,\"total_blocks\":%lu,"
            "\"read_attempts\":%lu,\"read_ok\":%lu,\"read_err\":%lu,\"read_err_pct_x10\":%lu,"
            "\"cmd17_tries\":%lu,\"no_r1\":%lu,\"data_fail\":%lu,\"crc_fail\":%lu,"
            "\"resync_fail\":%lu,\"tx_busy\":%lu}",
            state ? state : "status", detail ? detail : "",
+           (unsigned long)g_emmc.dump_start_lba,
+           (unsigned long)(g_emmc.dump_start_lba + g_emmc.dump_done_blocks),
            (unsigned long)g_emmc.dump_done_blocks, (unsigned long)g_emmc.dump_total_blocks,
            (unsigned long)attempts, (unsigned long)ok, (unsigned long)err, (unsigned long)err_pct_x10,
            (unsigned long)g_emmc.dump_stat_cmd17_tries, (unsigned long)g_emmc.dump_stat_no_r1,
@@ -711,6 +714,17 @@ static bool send_dump_data_bin(uint32_t offset, const uint8_t *data, uint16_t co
   wr_le16(&fr[6], count);
   memcpy(&fr[8], data, count);
   return app_send_binary(fr, (uint16_t)(8u + count));
+}
+
+static bool send_dump_run_bin(uint32_t offset, uint16_t count, uint8_t fill) {
+  uint8_t fr[9];
+  if (count == 0u) return false;
+  fr[0] = WS_BIN_MAGIC;
+  fr[1] = WS_CH_EMMC_DUMP_RUN;
+  wr_le32(&fr[2], offset);
+  wr_le16(&fr[6], count);
+  fr[8] = fill;
+  return app_send_binary(fr, (uint16_t)sizeof(fr));
 }
 
 static void send_cmd1_test_result(bool saw_response, bool ready, uint32_t responses,
@@ -1750,20 +1764,38 @@ void proto_emmc_poll(void) {
       if (n_send > remain) n_send = remain;
       if (n_send > EMMC_DUMP_WS_DATA_BYTES) n_send = EMMC_DUMP_WS_DATA_BYTES;
 
-      if (!send_dump_data_bin((g_emmc.dump_done_blocks * EMMC_DUMP_BLOCK_SIZE) + g_emmc.dump_chunk_off,
-                              &g_emmc.dump_block_buf[g_emmc.dump_chunk_off], n_send)) {
-        g_emmc.dump_tx_fail_streak++;
-        g_emmc.dump_stat_tx_busy++;
-        if ((g_emmc.dump_tx_fail_streak % 8u) == 0u) {
-          (void)send_dump_status("running", "tx busy; retrying");
-          g_emmc.dump_last_status_ms = now;
+      {
+        uint32_t abs_off = (g_emmc.dump_done_blocks * EMMC_DUMP_BLOCK_SIZE) + g_emmc.dump_chunk_off;
+        const uint8_t *p = &g_emmc.dump_block_buf[g_emmc.dump_chunk_off];
+        uint16_t i;
+        bool all00 = true;
+        bool allff = true;
+        bool sent_ok;
+
+        for (i = 0; i < n_send; i++) {
+          uint8_t b = p[i];
+          if (b != 0x00u) all00 = false;
+          if (b != 0xFFu) allff = false;
+          if (!all00 && !allff) break;
         }
-        if (g_emmc.dump_tx_fail_streak > EMMC_DUMP_TX_FAIL_LIMIT) {
-          g_emmc.dump_active = false;
-          if (g_emmc.tristate_default) emmc_apply_safe_io();
-          (void)send_dump_status("error", "stream stalled (tx busy)");
+
+        if (all00 || allff) sent_ok = send_dump_run_bin(abs_off, n_send, allff ? 0xFFu : 0x00u);
+        else sent_ok = send_dump_data_bin(abs_off, p, n_send);
+
+        if (!sent_ok) {
+          g_emmc.dump_tx_fail_streak++;
+          g_emmc.dump_stat_tx_busy++;
+          if ((g_emmc.dump_tx_fail_streak % 8u) == 0u) {
+            (void)send_dump_status("running", "tx busy; retrying");
+            g_emmc.dump_last_status_ms = now;
+          }
+          if (g_emmc.dump_tx_fail_streak > EMMC_DUMP_TX_FAIL_LIMIT) {
+            g_emmc.dump_active = false;
+            if (g_emmc.tristate_default) emmc_apply_safe_io();
+            (void)send_dump_status("error", "stream stalled (tx busy)");
+          }
+          return;
         }
-        return;
       }
 
       g_emmc.dump_tx_fail_streak = 0u;
