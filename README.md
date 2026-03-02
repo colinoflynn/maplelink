@@ -64,18 +64,20 @@ Some test on my computer for SPI:
 
 Some notes for either the human or clanker working on this thing.
 
-## Building Firmware
+### Building Firmware
 
 Firmware follows normal R-Pi Pico development, with a SDK externally held:
 
-1. Clone the directly somewhere.
-2. Clone the [pico-sdk](https://github.com/raspberrypi/pico-sdk) or download a release (if cloning be sure to init/update submodules - this project was developed on 2.2.0)
+1. Clone the [pico-sdk](https://github.com/raspberrypi/pico-sdk) or download a release (if cloning be sure to init/update submodules - this project was developed on 2.2.0)
+2. Clone the repo somewhere for this project or download a zip-file. Then in the root of that folder run:
 
 ```
 cmake -B build -G "Ninja" -DPICO_SDK_PATH="/path/to/pico-sdk"
 cd build
 cmake --build .
 ```
+
+This should make a `.uf2` you can drag onto the R-Pi Pico in bootloader mode.
 
 If you need some of the SDK tools, you can get pre-build versions from the [pico-sdk-tools](https://github.com/raspberrypi/pico-sdk-tools) repository, make sure they match your SDK version.
 
@@ -87,21 +89,17 @@ cmake -B build -G "Ninja" -DPICO_SDK_PATH="C:/dev/pico_sdk-src" -DCMAKE_C_COMPIL
 
 If your build fails when trying to build `picotool` this is because it did not find a matching version, and is attempting to build it. On Windows you may not have a regular C/C++ compiler so this will fail. The `pioasm` tool is needed for the PIO blocks (note the tool is pioasm, NOT picoasm). When passing the directories if using pre-built you must pass the path to the folder with the tool, NOT the path to the binary itself.
 
-## Web UI workflow
+### Web UI workflow
 
 - Edit the web page in `src/web/index.html`.
 - During build, CMake runs `tools/embed_html.py` automatically to generate:
   - `build/generated/index_html_data.h`
 - Firmware serves the generated HTML via `src/http_custom_files.c`.
 
-### xterm source mode
+#### xterm source mode
 
 Use the CMake cache option:
 
 - `BROWSERIO_XTERM_SOURCE=CDN` (default): loads xterm from CDN URLs.
 - `BROWSERIO_XTERM_SOURCE=LOCAL`: expects local `/xterm.js` and `/xterm.css` assets via `xterm_asset_get`.
 
-Example:
-
-```bash
-cmak
