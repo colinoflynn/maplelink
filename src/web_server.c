@@ -234,6 +234,26 @@ void ws_conn_close(ws_conn_t *conn) {
   free(conn);
 }
 
+void ws_conn_close_with_reason(ws_conn_t *conn, uint16_t code, const char *reason) {
+  uint8_t payload[125];
+  size_t rlen = 0;
+  uint16_t plen;
+
+  if (!conn || !conn->pcb) return;
+
+  if (conn->upgraded && code >= 1000u) {
+    if (reason) rlen = strlen(reason);
+    if (rlen > sizeof(payload) - 2u) rlen = sizeof(payload) - 2u;
+    payload[0] = (uint8_t)(code >> 8);
+    payload[1] = (uint8_t)(code & 0xFFu);
+    if (rlen > 0) memcpy(payload + 2, reason, rlen);
+    plen = (uint16_t)(2u + rlen);
+    (void)ws_send(conn, 0x8, payload, plen);
+  }
+
+  ws_conn_close(conn);
+}
+
 static bool http_get_header(const char *req, const char *name, char *out, int out_sz) {
   char pattern[64];
   const char *p;

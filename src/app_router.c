@@ -130,7 +130,7 @@ static void send_hello(void) {
 }
 
 static void on_open(ws_conn_t *conn) {
-  if (g_client && g_client != conn) ws_conn_close(g_client);
+  if (g_client && g_client != conn) ws_conn_close_with_reason(g_client, 4001u, "another tab connected");
   g_client = conn;
 
   proto_uart_on_client_open(conn);

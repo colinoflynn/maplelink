@@ -950,6 +950,7 @@
     let ws=null;
     let wsReconnectTimer=null;
     let wsPingTimer=null;
+    let wsReconnectPaused=false;
     const enc=new TextEncoder();
     const dec=new TextDecoder('utf-8',{fatal:false});
     let lineBuf='';
@@ -2351,10 +2352,25 @@
         wsPingTimer=setInterval(()=>send({type:'ping'}),5000);
         send({type:'hello'});send({type:'uart.get_config',port:'uart0'});send({type:'uart.rxmon.get'});spiSend('spi.get_config');emmcSend('emmc.get_config');send({type:'system.get_debug'});term.focus();
       };
-      ws.onclose=()=>{
-        st.textContent='disconnected';st.className='err';
+      ws.onclose=(ev)=>{
+        let takeover=false;
+        let suffix='';
+        if(ev&&typeof ev.code==='number'){
+          if(ev.code===4001){
+            takeover=true;
+            suffix=' (another tab connected)';
+          }else if(ev.reason){
+            suffix=' ('+ev.reason+')';
+          }
+        }
+        st.textContent='disconnected'+suffix;st.className='err';
         setConnPill('disconnected');
         if(wsPingTimer){clearInterval(wsPingTimer);wsPingTimer=null;}
+        wsReconnectPaused=takeover;
+        if(takeover){
+          appendTerm('\n[info disconnected: another tab is active; close that tab or refresh this one to reconnect]\n','dim');
+          return;
+        }
         if(!wsReconnectTimer){
           wsReconnectTimer=setTimeout(()=>{
             wsReconnectTimer=null;
@@ -2367,6 +2383,7 @@
 
     function openWs(){
       if(ws && (ws.readyState===WebSocket.OPEN || ws.readyState===WebSocket.CONNECTING)) return;
+      if(wsReconnectPaused) return;
       setConnPill('connecting');
       ws=new WebSocket('ws://'+location.hostname+':81/ws');
       ws.binaryType='arraybuffer';
