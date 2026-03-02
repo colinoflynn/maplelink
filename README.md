@@ -26,9 +26,9 @@ hacking, requiring only a R-Pi Pico and some wires (and probably logic clips).
   * Send arbitrary SPI commands to a device, including extra padding FF's
   * Lets you set 10 quick-access fields to transmit different commands (can change the number in html file)
 * eMMC Features:
- * Mostly experimental implementation
- * Reads ID, sizes
- * Infuriatingly slow dumping of user partition that will abort part-way through most likely
+  * Mostly experimental implementation
+  * Reads ID, sizes
+  * Infuriatingly slow dumping of user partition that will abort part-way through most likely
 * Re-enable R-Pi bootloader for easy development without touching a button
 * Front-end and most processing code written by AI, I have no idea what it does or how it works (as god intended)
 * Randomly disconnects or times out (some would call this a bug)
