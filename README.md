@@ -30,10 +30,13 @@ hacking, requiring only a R-Pi Pico and some wires (and probably logic clips).
   * Reads ID, sizes
   * Scan for empty/non-empty areas to try and avoid wasting time dumping large partitions
   * Infuriatingly slow dumping of user partition that you don't want to use for the full 4Gb flash
+  * Generate .gz (browser dependent)
   * Extra-questionable code quality
 * Re-enable R-Pi bootloader for easy development without touching a button
 * Front-end and much of the firmware code written by AI, I have no idea what it does or how it works (as god intended)
-* Randomly disconnects or times out (some would call this a bug)
+* Change between Dark Mode, Pink Mode, and MS-Dos 6.22 Mode Themes
+* Dec/Hex converter on every page
+* Randomly disconnects or times out sometimes (surprise feature)
 
 Note vt100 terminal mode requires internet to get the vt100 processing code, this can be moved onto the R-Pi as well but by
 default I did not for space reasons (there is a stub to copy it to).
@@ -55,6 +58,19 @@ Some test on my computer for SPI:
 
 ## Usage Directions
 
+USB Ethernet is a beautiful idea with an unfortunute history of quasi-standards and different implementations (I even wrote such firmware [a long time ago](https://github.com/contiki-os/contiki/blob/master/cpu/avr/dev/usb/rndis/rndis.c) so I have the scars). Luckily this  better nowadays, but there are still TWO different imeplementations you can try:
+
+* `maplelink-X.X-ncm.uf2`
+* `maplelink-X.X-rndis-ecm.uf2`
+
+Try the `ncm` one first - this is a more recent USB ethernet standard.
+
+The `rndis-ecm` tries two other standards: RNDIS is a Microsoft 'standard' (but some other devices work with it?), and ECM is an older standard. I may need to release a third version without RNDIS for certain things, but will wait to see if that is needed.
+
+Drag & drop the `.uf2` file onto a R-Pi pico in bootloader mode.
+
+I didn't need a driver for `ncm` in Windows 11, but I can provide signed drivers if required, open an issue if this is the problem.
+
 ### Terminal Usage
 
 1. Open the **Terminal** tab.
@@ -68,7 +84,7 @@ Some test on my computer for SPI:
    - `ansi colors`: interprets ANSI color escapes.
    - `vt100 (xterm.js)`: full terminal emulation (requires internet by default).
 5. Optional display controls:
-   - `Terminal Theme`: `default`, `matrix`, `canada`, `cool ranch`, `rainbow`, `pink`, `hot pink`.
+   - `Terminal Theme`: `default`, `matrix`, `rainbow`, `pink`, `hot pink`.
    - `hex view`: enables a hex view of incoming data
    - `Hex cols`: defines the hex width
    - `Hex gap ms`: After this many ms of no data, will make a new line in the hex view (to help with packets)
@@ -246,3 +262,4 @@ Use the CMake cache option:
 
 - `BROWSERIO_XTERM_SOURCE=CDN` (default): loads xterm from CDN URLs.
 - `BROWSERIO_XTERM_SOURCE=LOCAL`: expects local `/xterm.js` and `/xterm.css` assets via `xterm_asset_get`.
+
