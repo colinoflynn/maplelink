@@ -10,6 +10,7 @@ hacking, requiring only a R-Pi Pico and some wires (and probably logic clips).
   * ASCII, hex mode, and terminal (vt100) support.
   * Can tx hex blocks or specific text blocks.
   * Can send characters you type only after enter or or as you type.
+  * Hot pink & rainbow colour options.
   * Download logs
 * SPI Flash general features:
   * Little ASCII-art of SOIC8 pinout

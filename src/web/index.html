@@ -207,6 +207,7 @@
     <label>Terminal Theme <select id="termtheme">
       <option value="default" selected>default</option>
       <option value="matrix">matrix</option>
+      <option value="canada">canada</option>
       <option value="rainbow">rainbow</option>
       <option value="pink">pink</option>
       <option value="hotpink">hot pink</option>
@@ -2159,30 +2160,36 @@
     function xtermScrollback(){return Math.max(256,Math.min(50000,Math.floor(termLimit()/120)));}
     function trimTerm(){const lim=termLimit();while(termCharCount>lim){const n=term.firstChild;if(!n||n===cursor)break;const l=(n.textContent||'').length;termCharCount-=l;term.removeChild(n);}if(termCharCount<0)termCharCount=0;}
     function atBottom(el){return el.scrollHeight-el.scrollTop-el.clientHeight<8;}
+    function terminalDisplayText(text){
+      if(!text)return text;
+      if(terminalThemeName()!=='canada')return text;
+      return text.replace(/\r/g,'\u{1F9AB}').replace(/\n/g,'\u{1F341}\n');
+    }
     function appendTerm(text,cls){
       const stick=atBottom(term);
-      const rainbow=(terminalThemeName()==='rainbow'&&decodeMode.value!=='vt100'&&text&&text.length>0&&text.length<=256);
+      const shown=terminalDisplayText(text);
+      const rainbow=(terminalThemeName()==='rainbow'&&decodeMode.value!=='vt100'&&shown&&shown.length>0&&shown.length<=256);
       if(rainbow){
         const frag=document.createDocumentFragment();
-        for(let i=0;i<text.length;i++){
+        for(let i=0;i<shown.length;i++){
           const ch=document.createElement('span');
           if(cls)ch.className=cls;
           const hue=(rainbowPhase+(i*17))%360;
           ch.style.color='hsl('+hue+' 100% 72%)';
           ch.style.textShadow='0 0 2px rgba(255,255,255,.12)';
-          ch.textContent=text[i];
+          ch.textContent=shown[i];
           frag.appendChild(ch);
         }
         term.appendChild(frag);
-        rainbowPhase=(rainbowPhase+(text.length*17))%360;
+        rainbowPhase=(rainbowPhase+(shown.length*17))%360;
       }else{
         const span=document.createElement('span');
         if(cls)span.className=cls;
-        span.textContent=text;
+        span.textContent=shown;
         term.appendChild(span);
       }
       appendTextLog(text);
-      termCharCount+=text.length;
+      termCharCount+=shown.length;
       trimTerm();
       keepCursor();
       if(stick&&!scrollLock.checked)term.scrollTop=term.scrollHeight;
@@ -2231,6 +2238,7 @@
     function terminalThemePalette(name){
       const n=String(name||'default').toLowerCase();
       if(n==='matrix') return {termBg:'#040904',termFg:'#7dff78',hexFg:'#78f57a',hexBg:'#030a03',termShadow:'0 0 4px rgba(125,255,120,.22)',xterm:{background:'#040904',foreground:'#7dff78',cursor:'#7dff78',selectionBackground:'rgba(125,255,120,.30)'}};
+      if(n==='canada') return {termBg:'#140708',termFg:'#ff4d57',hexFg:'#fca5a5',hexBg:'#1a0a0c',termShadow:'0 0 3px rgba(255,77,87,.22)',xterm:{background:'#140708',foreground:'#ff4d57',cursor:'#ff4d57',selectionBackground:'rgba(255,77,87,.28)'}};
       if(n==='rainbow') return {termBg:'#12061f',termFg:'#ffd9ff',hexFg:'#ffe4a3',hexBg:'#160a24',termShadow:'0 0 3px rgba(255,77,166,.25)',xterm:{background:'#12061f',foreground:'#ffd9ff',cursor:'#22d3ee',selectionBackground:'rgba(236,72,153,.35)'}};
       if(n==='pink') return {termBg:'#130914',termFg:'#ffb7e8',hexFg:'#ff9ee2',hexBg:'#1a0b1a',termShadow:'none',xterm:{background:'#130914',foreground:'#ffb7e8',cursor:'#ff7bd5',selectionBackground:'rgba(255,123,213,.30)'}};
       if(n==='hotpink') return {termBg:'#170610',termFg:'#ff5ccf',hexFg:'#ff8fe0',hexBg:'#1d0815',termShadow:'0 0 4px rgba(255,92,207,.35)',xterm:{background:'#170610',foreground:'#ff5ccf',cursor:'#ff85dc',selectionBackground:'rgba(255,92,207,.38)'}};
