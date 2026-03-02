@@ -1174,9 +1174,13 @@
       const noR1Raw=String(Math.max(0,Math.floor(Number(parseNum(m.no_r1,0))||0)));
       const resyncRaw=String(Math.max(0,Math.floor(Number(parseNum(m.resync_fail,0))||0)));
       const txBusyRaw=String(Math.max(0,Math.floor(Number(parseNum(m.tx_busy,0))||0)));
+      const blockNormalRaw=String(Math.max(0,Math.floor(Number(parseNum(m.block_normal,0))||0)));
+      const blockAll00Raw=String(Math.max(0,Math.floor(Number(parseNum(m.block_all00,0))||0)));
+      const blockAllFFRaw=String(Math.max(0,Math.floor(Number(parseNum(m.block_allff,0))||0)));
       const pctX10=parseNum(m.read_err_pct_x10,(a>0)?Math.round((err*1000)/a):0);
       const pct=(pctX10/10).toFixed(1);
-      emmcDumpErrEl.textContent='Errors: '+errRaw+'/'+aRaw+' ('+pct+'%) | CRC '+crcRaw+' | no-R1 '+noR1Raw+' | resync '+resyncRaw+' | tx-busy '+txBusyRaw;
+      emmcDumpErrEl.textContent='Errors: '+errRaw+'/'+aRaw+' ('+pct+'%) | CRC '+crcRaw+' | no-R1 '+noR1Raw+' | resync '+resyncRaw+' | tx-busy '+txBusyRaw+
+        ' | Blocks: Normal '+blockNormalRaw+' | All-00 '+blockAll00Raw+' | All-FF '+blockAllFFRaw;
     }
     function updateEmmcDumpFileMeta(){
       const size=Math.max(0,emmcDumpMaxEnd);
@@ -1438,7 +1442,7 @@
           emmcDumpLastRateBytes=0;
           emmcDumpRateEma=0;
           emmcDumpLastEl.textContent='last dump bytes will appear here';
-          emmcDumpErrEl.textContent='Errors: 0/0 (0.0%) | CRC 0 | no-R1 0 | resync 0 | tx-busy 0';
+          emmcDumpErrEl.textContent='Errors: 0/0 (0.0%) | CRC 0 | no-R1 0 | resync 0 | tx-busy 0 | Blocks: Normal 0 | All-00 0 | All-FF 0';
           updateEmmcDumpFileMeta();
           updateEmmcDumpProgress();
         }

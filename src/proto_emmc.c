@@ -1815,6 +1815,18 @@ void proto_emmc_poll(void) {
       g_emmc.dump_last_progress_ms = now;
       g_emmc.dump_chunk_off = (uint16_t)(g_emmc.dump_chunk_off + n_send);
       if (g_emmc.dump_chunk_off >= EMMC_DUMP_BLOCK_SIZE) {
+        bool blk_all00 = true;
+        bool blk_allff = true;
+        uint32_t bi;
+        for (bi = 0; bi < EMMC_DUMP_BLOCK_SIZE; bi++) {
+          uint8_t bb = g_emmc.dump_block_buf[bi];
+          if (bb != 0x00u) blk_all00 = false;
+          if (bb != 0xFFu) blk_allff = false;
+          if (!blk_all00 && !blk_allff) break;
+        }
+        if (blk_all00) g_emmc.dump_stat_block_all00++;
+        else if (blk_allff) g_emmc.dump_stat_block_allff++;
+        else g_emmc.dump_stat_block_normal++;
         g_emmc.dump_block_loaded = false;
         g_emmc.dump_done_blocks++;
         emmc_send_idle_clocks(EMMC_DUMP_INTER_BLOCK_IDLE_CLKS);
