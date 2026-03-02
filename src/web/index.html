@@ -342,6 +342,12 @@
           <option value="3000000">3 MHz</option>
           <option value="4000000">4 MHz</option>
         </select></label>
+        <label>Retry Idle <select id="emmcretryidle">
+          <option value="0">0 clocks</option>
+          <option value="1">1 clock</option>
+          <option value="4">4 clocks</option>
+          <option value="8" selected>8 clocks</option>
+        </select></label>
         <button id="emmcsetspeed">Apply Speed</button>
         <span id="emmcst" class="dim">idle</span>
       </div>
@@ -419,6 +425,7 @@
       </div>
       <div class="dim" id="emmcdumpstat">dump: idle</div>
       <div class="dumprate" id="emmcdumprate">Rate: --</div>
+      <div class="dumprate" id="emmcdumperr">Errors: --</div>
       <div id="emmcdumplast">last dump bytes will appear here</div>
     </div>
     <div id="emmcout"></div>
@@ -573,10 +580,12 @@
     const emmcDumpFileMetaEl=document.getElementById('emmcdumpfilemeta');
     const emmcDumpStatEl=document.getElementById('emmcdumpstat');
     const emmcDumpRateEl=document.getElementById('emmcdumprate');
+    const emmcDumpErrEl=document.getElementById('emmcdumperr');
     const emmcDumpLastEl=document.getElementById('emmcdumplast');
     const emmcTriState=document.getElementById('emmctristate');
     const emmcPullups=document.getElementById('emmcpullups');
     const emmcSpeed=document.getElementById('emmcspeed');
+    const emmcRetryIdle=document.getElementById('emmcretryidle');
     const emmcIdInt=document.getElementById('emmcidint');
     const emmcIdMon=document.getElementById('emmcidmon');
     const emmcSt=document.getElementById('emmcst');
@@ -1126,6 +1135,18 @@
       }
       emmcDumpRateEl.textContent='Rate: '+Math.round(rate)+' B/s | Avg: '+Math.round(avg)+' B/s | ETA: '+eta;
     }
+    function updateEmmcDumpErrors(m){
+      const a=parseNum(m.read_attempts,0);
+      const ok=parseNum(m.read_ok,0);
+      const err=parseNum(m.read_err,Math.max(0,a-ok));
+      const pctX10=parseNum(m.read_err_pct_x10,(a>0)?Math.round((err*1000)/a):0);
+      const pct=(pctX10/10).toFixed(1);
+      const crc=parseNum(m.crc_fail,0);
+      const noR1=parseNum(m.no_r1,0);
+      const resync=parseNum(m.resync_fail,0);
+      const txBusy=parseNum(m.tx_busy,0);
+      emmcDumpErrEl.textContent='Errors: '+err+'/'+a+' ('+pct+'%) | CRC '+crc+' | no-R1 '+noR1+' | resync '+resync+' | tx-busy '+txBusy;
+    }
     function updateEmmcDumpFileMeta(){
       const asm=emmcAssembleDump();
       const size=asm?asm.total:0;
@@ -1230,6 +1251,7 @@
         if(typeof m.tristate_default==='boolean')emmcTriState.checked=m.tristate_default;
         if(typeof m.pullups_enabled==='boolean')emmcPullups.checked=m.pullups_enabled;
         if(m.speed_hz)emmcSpeed.value=String(m.speed_hz);
+        if(typeof m.retry_idle_clks==='number')emmcRetryIdle.value=String(m.retry_idle_clks);
         if(m.idpoll_interval_ms)emmcIdInt.value=String(m.idpoll_interval_ms);
         if(typeof m.idpoll_monitor_between==='boolean')emmcIdMon.checked=m.idpoll_monitor_between;
         if(m.pins){
@@ -1378,9 +1400,11 @@
           emmcDumpLastRateBytes=0;
           emmcDumpRateEma=0;
           emmcDumpLastEl.textContent='last dump bytes will appear here';
+          emmcDumpErrEl.textContent='Errors: 0/0 (0.0%) | CRC 0 | no-R1 0 | resync 0 | tx-busy 0';
           updateEmmcDumpFileMeta();
           updateEmmcDumpProgress();
         }
+        updateEmmcDumpErrors(m);
         if(st==='complete'||st==='stopped'||st==='error'){
           updateEmmcDumpProgress();
           if(detail.length){
@@ -1708,14 +1732,14 @@
     spiIdStopBtn.onclick=()=>{spiSend('spi.idpoll.stop');setIdPollLive(false);idWindow.textContent='--';idWindow.className='idval';idWinTr.textContent='--';resetPinUi();};
     emmcCfgBtn.onclick=()=>emmcSend('emmc.get_config');
     emmcApplyIoBtn.onclick=()=>emmcSend('emmc.set_io',{tristate_default:emmcTriState.checked,pullups_enabled:emmcPullups.checked});
-    emmcSetSpeedBtn.onclick=()=>emmcSend('emmc.set_speed',{speed_hz:parseNum(emmcSpeed.value,400000),idpoll_interval_ms:parseNum(emmcIdInt.value,500)});
+    emmcSetSpeedBtn.onclick=()=>emmcSend('emmc.set_speed',{speed_hz:parseNum(emmcSpeed.value,400000),idpoll_interval_ms:parseNum(emmcIdInt.value,500),retry_idle_clks:parseNum(emmcRetryIdle.value,8)});
     emmcDetectStartBtn.onclick=()=>{emmcDetectActive=true;emmcSend('emmc.detect.start');};
     emmcDetectStopBtn.onclick=()=>{emmcDetectActive=false;emmcSend('emmc.detect.stop');resetEmmcPinUi();};
     emmcCmdTestBtn.onclick=()=>{emmcSt.textContent='running cmd test...';emmcSt.className='dim';emmcSend('emmc.cmd_test',{cycles:6});};
     emmcCmd1TestBtn.onclick=()=>{emmcSt.textContent='running cmd1 test...';emmcSt.className='dim';emmcSend('emmc.cmd1_test',{retries:24,arg:0x40FF8000});};
     emmcSdTestBtn.onclick=()=>{emmcSt.textContent='running sd test...';emmcSt.className='dim';emmcSend('emmc.sd_test',{retries:32,arg:0x40FF8000});};
     emmcLayoutReadBtn.onclick=()=>{emmcSt.textContent='reading layout...';emmcSt.className='dim';emmcSend('emmc.layout.read');};
-    emmcIdStartBtn.onclick=()=>{emmcIdPollActive=true;emmcIdCount=0;emmcIdCountEl.textContent='0';setEmmcLive(true);setChangedText(emmcIdLastEl,'waiting...');setChangedText(emmcIdMidEl,'--');setChangedText(emmcIdPnmEl,'--');setChangedText(emmcIdPsnEl,'--');setChangedText(emmcOcrFlagsEl,'--');setChangedText(emmcAddrModeEl,'--');setChangedText(emmcCsdSumEl,'--');setChangedText(emmcIdWindowEl,'--');setChangedText(emmcIdTrEl,'--');emmcSend('emmc.idpoll.start',{interval_ms:parseNum(emmcIdInt.value,500),speed_hz:parseNum(emmcSpeed.value,400000),monitor_between:emmcIdMon.checked});};
+    emmcIdStartBtn.onclick=()=>{emmcIdPollActive=true;emmcIdCount=0;emmcIdCountEl.textContent='0';setEmmcLive(true);setChangedText(emmcIdLastEl,'waiting...');setChangedText(emmcIdMidEl,'--');setChangedText(emmcIdPnmEl,'--');setChangedText(emmcIdPsnEl,'--');setChangedText(emmcOcrFlagsEl,'--');setChangedText(emmcAddrModeEl,'--');setChangedText(emmcCsdSumEl,'--');setChangedText(emmcIdWindowEl,'--');setChangedText(emmcIdTrEl,'--');emmcSend('emmc.idpoll.start',{interval_ms:parseNum(emmcIdInt.value,500),speed_hz:parseNum(emmcSpeed.value,400000),retry_idle_clks:parseNum(emmcRetryIdle.value,8),monitor_between:emmcIdMon.checked});};
     emmcIdStopBtn.onclick=()=>{emmcIdPollActive=false;emmcSend('emmc.idpoll.stop');setEmmcLive(false);setChangedText(emmcIdWindowEl,'--');setChangedText(emmcIdTrEl,'--');resetEmmcPinUi();};
     emmcDumpStartBtn.onclick=()=>{
       let startTxt=String(emmcDumpStartEl.value||'').trim().toLowerCase();
@@ -1741,6 +1765,7 @@
         block_count:blocks>>>0,
         chunk_bytes:chunk>>>0,
         double_read:!!emmcDumpDblEl.checked,
+        retry_idle_clks:parseNum(emmcRetryIdle.value,8),
         verify_retries:verifyRetries>>>0,
         auto_retries:autoRetries>>>0
       });

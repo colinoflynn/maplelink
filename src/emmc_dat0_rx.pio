@@ -4,8 +4,13 @@
 .wrap_target
     pull block      side 1
     out x, 32       side 1
+
+wait_start:
+    nop             side 0
+    jmp pin wait_start side 1
+
 bitloop:
     nop             side 0
-    in pins, 1      side 1
-    jmp x-- bitloop side 0
+    in pins, 1      side 0
+    jmp x-- bitloop side 1
 .wrap
