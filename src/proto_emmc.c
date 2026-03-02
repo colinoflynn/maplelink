@@ -40,6 +40,8 @@
 #define EMMC_DUMP_TX_FAIL_LIMIT 40u
 #define EMMC_DUMP_HEARTBEAT_MS 1000u
 #define EMMC_DUMP_STALL_TIMEOUT_MS 4000u
+#define EMMC_SCAN_HEARTBEAT_MS 1000u
+#define EMMC_FIND_HEARTBEAT_MS 1000u
 #define EMMC_PIO_RX_BYTES (EMMC_DUMP_BLOCK_SIZE + 2u)
 #define EMMC_RESELECT_EVERY_BLOCKS 16u
 #define EMMC_CMD17_R1_EXTRA_TRIES 3u
@@ -107,6 +109,22 @@ typedef struct {
   uint32_t last_dump_ms;
   uint32_t dump_last_progress_ms;
   uint32_t dump_last_status_ms;
+  bool scan_active;
+  uint32_t scan_start_lba;
+  uint32_t scan_skip_blocks;
+  uint32_t scan_total_blocks;
+  uint32_t scan_done_blocks;
+  uint32_t scan_nonempty_blocks;
+  uint32_t scan_ranges_found;
+  bool scan_in_range;
+  uint32_t scan_range_start_lba;
+  uint32_t scan_last_nonempty_lba;
+  uint32_t scan_last_status_ms;
+  bool find_active;
+  uint32_t find_start_lba;
+  uint32_t find_max_blocks;
+  uint32_t find_done_blocks;
+  uint32_t find_last_status_ms;
 } emmc_state_t;
 
 static emmc_state_t g_emmc = {
@@ -149,6 +167,22 @@ static emmc_state_t g_emmc = {
     .last_dump_ms = 0u,
     .dump_last_progress_ms = 0u,
     .dump_last_status_ms = 0u,
+    .scan_active = false,
+    .scan_start_lba = 0u,
+    .scan_skip_blocks = 0u,
+    .scan_total_blocks = 0u,
+    .scan_done_blocks = 0u,
+    .scan_nonempty_blocks = 0u,
+    .scan_ranges_found = 0u,
+    .scan_in_range = false,
+    .scan_range_start_lba = 0u,
+    .scan_last_nonempty_lba = 0u,
+    .scan_last_status_ms = 0u,
+    .find_active = false,
+    .find_start_lba = 0u,
+    .find_max_blocks = 0u,
+    .find_done_blocks = 0u,
+    .find_last_status_ms = 0u,
 };
 
 static uint32_t now_ms(void) { return to_ms_since_boot(get_absolute_time()); }
@@ -712,6 +746,77 @@ static bool send_dump_status(const char *state, const char *detail) {
            (unsigned long)g_emmc.dump_stat_block_normal,
            (unsigned long)g_emmc.dump_stat_block_all00,
            (unsigned long)g_emmc.dump_stat_block_allff);
+  return app_send_text(out);
+}
+
+static bool emmc_block_all00_allff(const uint8_t *buf, bool *all00, bool *allff) {
+  uint32_t i;
+  bool z = true;
+  bool f = true;
+  if (!buf || !all00 || !allff) return false;
+  for (i = 0; i < EMMC_DUMP_BLOCK_SIZE; i++) {
+    uint8_t b = buf[i];
+    if (b != 0x00u) z = false;
+    if (b != 0xFFu) f = false;
+    if (!z && !f) break;
+  }
+  *all00 = z;
+  *allff = f;
+  return true;
+}
+
+static bool send_scan_status(const char *state, const char *detail, uint32_t current_lba) {
+  char out[384];
+  snprintf(out, sizeof(out),
+           "{\"type\":\"emmc.scan.status\",\"state\":\"%s\",\"detail\":\"%s\","
+           "\"start_lba\":%lu,\"skip_blocks\":%lu,\"total_blocks\":%lu,"
+           "\"done_blocks\":%lu,\"current_lba\":%lu,\"nonempty_blocks\":%lu,\"ranges_found\":%lu}",
+           state ? state : "status", detail ? detail : "",
+           (unsigned long)g_emmc.scan_start_lba, (unsigned long)g_emmc.scan_skip_blocks,
+           (unsigned long)g_emmc.scan_total_blocks, (unsigned long)g_emmc.scan_done_blocks,
+           (unsigned long)current_lba, (unsigned long)g_emmc.scan_nonempty_blocks,
+           (unsigned long)g_emmc.scan_ranges_found);
+  return app_send_text(out);
+}
+
+static bool send_scan_range(uint32_t start_lba, uint32_t end_lba, uint32_t span_blocks) {
+  char out[256];
+  snprintf(out, sizeof(out),
+           "{\"type\":\"emmc.scan.range\",\"start_lba\":%lu,\"end_lba\":%lu,\"span_blocks\":%lu}",
+           (unsigned long)start_lba, (unsigned long)end_lba, (unsigned long)span_blocks);
+  return app_send_text(out);
+}
+
+static bool send_scan_result(bool ok, const char *msg) {
+  char out[256];
+  snprintf(out, sizeof(out),
+           "{\"type\":\"emmc.scan.result\",\"ok\":%s,\"msg\":\"%s\","
+           "\"done_blocks\":%lu,\"total_blocks\":%lu,\"nonempty_blocks\":%lu,\"ranges_found\":%lu}",
+           ok ? "true" : "false", msg ? msg : "",
+           (unsigned long)g_emmc.scan_done_blocks, (unsigned long)g_emmc.scan_total_blocks,
+           (unsigned long)g_emmc.scan_nonempty_blocks, (unsigned long)g_emmc.scan_ranges_found);
+  return app_send_text(out);
+}
+
+static bool send_find_start_status(const char *state, const char *detail, uint32_t current_lba) {
+  char out[320];
+  snprintf(out, sizeof(out),
+           "{\"type\":\"emmc.find_start.status\",\"state\":\"%s\",\"detail\":\"%s\","
+           "\"start_lba\":%lu,\"max_blocks\":%lu,\"done_blocks\":%lu,\"current_lba\":%lu}",
+           state ? state : "status", detail ? detail : "",
+           (unsigned long)g_emmc.find_start_lba, (unsigned long)g_emmc.find_max_blocks,
+           (unsigned long)g_emmc.find_done_blocks, (unsigned long)current_lba);
+  return app_send_text(out);
+}
+
+static bool send_find_start_result(bool ok, bool found, uint32_t found_lba, const char *msg) {
+  char out[288];
+  snprintf(out, sizeof(out),
+           "{\"type\":\"emmc.find_start.result\",\"ok\":%s,\"found\":%s,\"found_lba\":%lu,"
+           "\"start_lba\":%lu,\"done_blocks\":%lu,\"max_blocks\":%lu,\"msg\":\"%s\"}",
+           ok ? "true" : "false", found ? "true" : "false", (unsigned long)found_lba,
+           (unsigned long)g_emmc.find_start_lba, (unsigned long)g_emmc.find_done_blocks,
+           (unsigned long)g_emmc.find_max_blocks, msg ? msg : "");
   return app_send_text(out);
 }
 
@@ -1493,6 +1598,8 @@ void proto_emmc_on_client_close(ws_conn_t *conn) {
   g_emmc.detect_enabled = false;
   g_emmc.idpoll_enabled = false;
   g_emmc.dump_active = false;
+  g_emmc.scan_active = false;
+  g_emmc.find_active = false;
 }
 
 bool proto_emmc_handle_text(const char *type, const char *json) {
@@ -1523,6 +1630,10 @@ bool proto_emmc_handle_text(const char *type, const char *json) {
     return true;
   }
   if (strcmp(type, "emmc.detect.start") == 0) {
+    g_emmc.idpoll_enabled = false;
+    g_emmc.dump_active = false;
+    g_emmc.scan_active = false;
+    g_emmc.find_active = false;
     g_emmc.detect_enabled = true;
     send_config();
     send_pins();
@@ -1541,6 +1652,10 @@ bool proto_emmc_handle_text(const char *type, const char *json) {
     if (json_extract_u32(json, "retry_idle_clks", &v)) g_emmc.retry_idle_clks = clamp_retry_idle_clks(v);
     if (json_extract_bool(json, "monitor_between", &b)) g_emmc.idpoll_monitor_between = b;
     emmc_update_timing();
+    g_emmc.detect_enabled = false;
+    g_emmc.dump_active = false;
+    g_emmc.scan_active = false;
+    g_emmc.find_active = false;
     g_emmc.idpoll_enabled = true;
     g_emmc.poll_count = 0u;
     set_idpoll_baseline();
@@ -1557,6 +1672,8 @@ bool proto_emmc_handle_text(const char *type, const char *json) {
     g_emmc.idpoll_enabled = false;
     g_emmc.detect_enabled = false;
     g_emmc.dump_active = false;
+    g_emmc.scan_active = false;
+    g_emmc.find_active = false;
     (void)send_layout_result();
     if (g_emmc.tristate_default) emmc_apply_safe_io();
     return true;
@@ -1571,6 +1688,8 @@ bool proto_emmc_handle_text(const char *type, const char *json) {
     uint32_t auto_retries_req = EMMC_DUMP_AUTO_RETRIES_DEFAULT;
     g_emmc.idpoll_enabled = false;
     g_emmc.detect_enabled = false;
+    g_emmc.scan_active = false;
+    g_emmc.find_active = false;
     g_emmc.dump_use_pio = true;
     if (json_extract_u32(json, "start_lba", &v)) g_emmc.dump_start_lba = v;
     if (json_extract_u32(json, "block_count", &v)) blocks = v;
@@ -1619,6 +1738,82 @@ bool proto_emmc_handle_text(const char *type, const char *json) {
     g_emmc.dump_active = false;
     if (g_emmc.tristate_default) emmc_apply_safe_io();
     (void)send_dump_status("stopped", "dump stopped by user");
+    return true;
+  }
+  if (strcmp(type, "emmc.scan.start") == 0) {
+    char msg[96];
+    uint16_t rca;
+    bool hc;
+    uint32_t total = 0u;
+    g_emmc.idpoll_enabled = false;
+    g_emmc.detect_enabled = false;
+    g_emmc.dump_active = false;
+    g_emmc.find_active = false;
+    if (json_extract_u32(json, "start_lba", &v)) g_emmc.scan_start_lba = v;
+    if (json_extract_u32(json, "skip_blocks", &v)) g_emmc.scan_skip_blocks = v;
+    if (json_extract_u32(json, "total_blocks", &v)) total = v;
+    if (json_extract_u32(json, "retry_idle_clks", &v)) g_emmc.retry_idle_clks = clamp_retry_idle_clks(v);
+    if (json_extract_u32(json, "auto_retries", &v)) g_emmc.dump_auto_retries = clamp_dump_auto_retries(v);
+    if (total == 0u) total = 1u;
+    g_emmc.scan_total_blocks = total;
+    g_emmc.scan_done_blocks = 0u;
+    g_emmc.scan_nonempty_blocks = 0u;
+    g_emmc.scan_ranges_found = 0u;
+    g_emmc.scan_in_range = false;
+    g_emmc.scan_range_start_lba = 0u;
+    g_emmc.scan_last_nonempty_lba = 0u;
+    g_emmc.scan_last_status_ms = now_ms();
+    if (!emmc_prepare_card_for_data(&rca, &hc, msg, sizeof(msg))) {
+      g_emmc.scan_active = false;
+      (void)send_scan_status("error", msg, g_emmc.scan_start_lba);
+      (void)send_scan_result(false, msg);
+      return true;
+    }
+    g_emmc.dump_rca = rca;
+    g_emmc.dump_hc_addressing = hc;
+    g_emmc.scan_active = true;
+    (void)send_scan_status("running", "scan started", g_emmc.scan_start_lba);
+    return true;
+  }
+  if (strcmp(type, "emmc.scan.stop") == 0) {
+    g_emmc.scan_active = false;
+    if (g_emmc.tristate_default) emmc_apply_safe_io();
+    (void)send_scan_status("stopped", "scan stopped by user", g_emmc.scan_start_lba);
+    return true;
+  }
+  if (strcmp(type, "emmc.find_start.start") == 0) {
+    char msg[96];
+    uint16_t rca;
+    bool hc;
+    uint32_t max_blocks = 0u;
+    g_emmc.idpoll_enabled = false;
+    g_emmc.detect_enabled = false;
+    g_emmc.dump_active = false;
+    g_emmc.scan_active = false;
+    if (json_extract_u32(json, "start_lba", &v)) g_emmc.find_start_lba = v;
+    if (json_extract_u32(json, "max_blocks", &v)) max_blocks = v;
+    if (json_extract_u32(json, "retry_idle_clks", &v)) g_emmc.retry_idle_clks = clamp_retry_idle_clks(v);
+    if (json_extract_u32(json, "auto_retries", &v)) g_emmc.dump_auto_retries = clamp_dump_auto_retries(v);
+    if (max_blocks == 0u) max_blocks = 1u;
+    g_emmc.find_max_blocks = max_blocks;
+    g_emmc.find_done_blocks = 0u;
+    g_emmc.find_last_status_ms = now_ms();
+    if (!emmc_prepare_card_for_data(&rca, &hc, msg, sizeof(msg))) {
+      g_emmc.find_active = false;
+      (void)send_find_start_status("error", msg, g_emmc.find_start_lba);
+      (void)send_find_start_result(false, false, 0u, msg);
+      return true;
+    }
+    g_emmc.dump_rca = rca;
+    g_emmc.dump_hc_addressing = hc;
+    g_emmc.find_active = true;
+    (void)send_find_start_status("running", "find-start started", g_emmc.find_start_lba);
+    return true;
+  }
+  if (strcmp(type, "emmc.find_start.stop") == 0) {
+    g_emmc.find_active = false;
+    if (g_emmc.tristate_default) emmc_apply_safe_io();
+    (void)send_find_start_status("stopped", "find-start stopped by user", g_emmc.find_start_lba + g_emmc.find_done_blocks);
     return true;
   }
   if (strcmp(type, "emmc.cmd_test") == 0) {
@@ -1833,5 +2028,135 @@ void proto_emmc_poll(void) {
         g_emmc.dump_last_progress_ms = now;
       }
     }
+  }
+
+  if (g_emmc.scan_active) {
+    uint64_t step = (uint64_t)g_emmc.scan_skip_blocks + 1ull;
+    uint64_t lba64 = (uint64_t)g_emmc.scan_start_lba + ((uint64_t)g_emmc.scan_done_blocks * step);
+    uint32_t lba = 0u;
+    bool all00 = false;
+    bool allff = false;
+
+    if ((now - g_emmc.scan_last_status_ms) >= EMMC_SCAN_HEARTBEAT_MS) {
+      uint32_t hb_lba = g_emmc.scan_start_lba;
+      if (lba64 <= 0xFFFFFFFFull) hb_lba = (uint32_t)lba64;
+      (void)send_scan_status("running", "in progress", hb_lba);
+      g_emmc.scan_last_status_ms = now;
+    }
+
+    if (g_emmc.scan_done_blocks >= g_emmc.scan_total_blocks) {
+      if (g_emmc.scan_in_range) {
+        uint32_t span = (g_emmc.scan_last_nonempty_lba - g_emmc.scan_range_start_lba) + 1u;
+        (void)send_scan_range(g_emmc.scan_range_start_lba, g_emmc.scan_last_nonempty_lba, span);
+        g_emmc.scan_ranges_found++;
+        g_emmc.scan_in_range = false;
+      }
+      g_emmc.scan_active = false;
+      if (g_emmc.tristate_default) emmc_apply_safe_io();
+      (void)send_scan_status("complete", "scan complete", g_emmc.scan_start_lba);
+      (void)send_scan_result(true, "scan complete");
+      return;
+    }
+
+    if (lba64 > 0xFFFFFFFFull) {
+      g_emmc.scan_active = false;
+      if (g_emmc.tristate_default) emmc_apply_safe_io();
+      (void)send_scan_status("error", "LBA overflow", 0xFFFFFFFFu);
+      (void)send_scan_result(false, "LBA overflow");
+      return;
+    }
+    lba = (uint32_t)lba64;
+
+    if (!emmc_read_block(lba, g_emmc.dump_hc_addressing, g_emmc.dump_block_buf, dump_msg, sizeof(dump_msg))) {
+      g_emmc.scan_active = false;
+      if (g_emmc.tristate_default) emmc_apply_safe_io();
+      (void)send_scan_status("error", dump_msg, lba);
+      (void)send_scan_result(false, dump_msg);
+      return;
+    }
+
+    if (!emmc_block_all00_allff(g_emmc.dump_block_buf, &all00, &allff)) {
+      g_emmc.scan_active = false;
+      if (g_emmc.tristate_default) emmc_apply_safe_io();
+      (void)send_scan_status("error", "scan classify failed", lba);
+      (void)send_scan_result(false, "scan classify failed");
+      return;
+    }
+
+    if (!all00 && !allff) {
+      g_emmc.scan_nonempty_blocks++;
+      if (!g_emmc.scan_in_range) {
+        g_emmc.scan_in_range = true;
+        g_emmc.scan_range_start_lba = lba;
+      }
+      g_emmc.scan_last_nonempty_lba = lba;
+    } else if (g_emmc.scan_in_range) {
+      uint32_t span = (g_emmc.scan_last_nonempty_lba - g_emmc.scan_range_start_lba) + 1u;
+      (void)send_scan_range(g_emmc.scan_range_start_lba, g_emmc.scan_last_nonempty_lba, span);
+      g_emmc.scan_ranges_found++;
+      g_emmc.scan_in_range = false;
+    }
+
+    g_emmc.scan_done_blocks++;
+    return;
+  }
+
+  if (g_emmc.find_active) {
+    uint64_t lba64 = (uint64_t)g_emmc.find_start_lba + (uint64_t)g_emmc.find_done_blocks;
+    uint32_t lba = 0u;
+    bool all00 = false;
+    bool allff = false;
+
+    if ((now - g_emmc.find_last_status_ms) >= EMMC_FIND_HEARTBEAT_MS) {
+      uint32_t hb_lba = g_emmc.find_start_lba;
+      if (lba64 <= 0xFFFFFFFFull) hb_lba = (uint32_t)lba64;
+      (void)send_find_start_status("running", "in progress", hb_lba);
+      g_emmc.find_last_status_ms = now;
+    }
+
+    if (g_emmc.find_done_blocks >= g_emmc.find_max_blocks) {
+      g_emmc.find_active = false;
+      if (g_emmc.tristate_default) emmc_apply_safe_io();
+      (void)send_find_start_status("complete", "no non-empty block found", g_emmc.find_start_lba + g_emmc.find_done_blocks);
+      (void)send_find_start_result(true, false, 0u, "no non-empty block found");
+      return;
+    }
+
+    if (lba64 > 0xFFFFFFFFull) {
+      g_emmc.find_active = false;
+      if (g_emmc.tristate_default) emmc_apply_safe_io();
+      (void)send_find_start_status("error", "LBA overflow", 0xFFFFFFFFu);
+      (void)send_find_start_result(false, false, 0u, "LBA overflow");
+      return;
+    }
+    lba = (uint32_t)lba64;
+
+    if (!emmc_read_block(lba, g_emmc.dump_hc_addressing, g_emmc.dump_block_buf, dump_msg, sizeof(dump_msg))) {
+      g_emmc.find_active = false;
+      if (g_emmc.tristate_default) emmc_apply_safe_io();
+      (void)send_find_start_status("error", dump_msg, lba);
+      (void)send_find_start_result(false, false, 0u, dump_msg);
+      return;
+    }
+
+    if (!emmc_block_all00_allff(g_emmc.dump_block_buf, &all00, &allff)) {
+      g_emmc.find_active = false;
+      if (g_emmc.tristate_default) emmc_apply_safe_io();
+      (void)send_find_start_status("error", "find classify failed", lba);
+      (void)send_find_start_result(false, false, 0u, "find classify failed");
+      return;
+    }
+
+    if (!all00 && !allff) {
+      g_emmc.find_active = false;
+      if (g_emmc.tristate_default) emmc_apply_safe_io();
+      g_emmc.find_done_blocks++;
+      (void)send_find_start_status("complete", "found non-empty block", lba);
+      (void)send_find_start_result(true, true, lba, "found non-empty block");
+      return;
+    }
+
+    g_emmc.find_done_blocks++;
+    return;
   }
 }

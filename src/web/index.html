@@ -425,12 +425,34 @@
         <button id="emmcdumpstartbtn">Start Dump</button>
         <button id="emmcdumpstopbtn">Stop Dump</button>
         <button id="emmcdumpdlbtn">Download Bin</button>
+        <button id="emmcdumpdlgzbtn">Download GZip</button>
         <span class="dim" id="emmcdumpfilemeta">emmc_dump_--.bin (0 bytes)</span>
       </div>
       <div class="dim" id="emmcdumpstat">dump: idle</div>
       <div class="dumprate" id="emmcdumprate">Rate: --</div>
       <div class="dumprate" id="emmcdumperr">Errors: --</div>
       <div id="emmcdumplast">last dump bytes will appear here</div>
+    </div>
+    <div class="group">
+      <div class="gtitle">Scan Memory</div>
+      <div class="grow">
+        <label>Start LBA <input id="emmcscanstart" type="text" value="0"></label>
+        <label>Skip Blocks <input id="emmcscanskip" type="number" min="0" step="1" value="255"></label>
+        <label>Total Blocks <input id="emmcscantotal" type="number" min="1" step="1" value="4096"></label>
+        <button id="emmcscanstartbtn">Start Scan</button>
+        <button id="emmcscanstopbtn">Stop Scan</button>
+      </div>
+      <div class="dim" id="emmcscanstat">scan: idle</div>
+    </div>
+    <div class="group">
+      <div class="gtitle">Find Start</div>
+      <div class="grow">
+        <label>Start LBA <input id="emmcfindstart" type="text" value="0"></label>
+        <label>Max Search Length (Blocks) <input id="emmcfindmax" type="number" min="1" step="1" value="4096"></label>
+        <button id="emmcfindstartbtn">Start Find</button>
+        <button id="emmcfindstopbtn">Stop Find</button>
+      </div>
+      <div class="dim" id="emmcfindstat">find-start: idle</div>
     </div>
     <div id="emmcout"></div>
   </div>
@@ -582,11 +604,23 @@
     const emmcDumpStartBtn=document.getElementById('emmcdumpstartbtn');
     const emmcDumpStopBtn=document.getElementById('emmcdumpstopbtn');
     const emmcDumpDlBtn=document.getElementById('emmcdumpdlbtn');
+    const emmcDumpDlGzBtn=document.getElementById('emmcdumpdlgzbtn');
     const emmcDumpFileMetaEl=document.getElementById('emmcdumpfilemeta');
     const emmcDumpStatEl=document.getElementById('emmcdumpstat');
     const emmcDumpRateEl=document.getElementById('emmcdumprate');
     const emmcDumpErrEl=document.getElementById('emmcdumperr');
     const emmcDumpLastEl=document.getElementById('emmcdumplast');
+    const emmcScanStartEl=document.getElementById('emmcscanstart');
+    const emmcScanSkipEl=document.getElementById('emmcscanskip');
+    const emmcScanTotalEl=document.getElementById('emmcscantotal');
+    const emmcScanStartBtn=document.getElementById('emmcscanstartbtn');
+    const emmcScanStopBtn=document.getElementById('emmcscanstopbtn');
+    const emmcScanStatEl=document.getElementById('emmcscanstat');
+    const emmcFindStartEl=document.getElementById('emmcfindstart');
+    const emmcFindMaxEl=document.getElementById('emmcfindmax');
+    const emmcFindStartBtn=document.getElementById('emmcfindstartbtn');
+    const emmcFindStopBtn=document.getElementById('emmcfindstopbtn');
+    const emmcFindStatEl=document.getElementById('emmcfindstat');
     const emmcTriState=document.getElementById('emmctristate');
     const emmcPullups=document.getElementById('emmcpullups');
     const emmcSpeed=document.getElementById('emmcspeed');
@@ -931,6 +965,19 @@
       if(!b.length)return '--';
       return Array.from(b,v=>v.toString(16).toUpperCase().padStart(2,'0')).join(' ');
     }
+    function emmcPieceLen(v){
+      if(!v)return 0;
+      if(v.kind==='run')return Math.max(0,parseNum(v.len,0));
+      if(v.kind==='raw'&&v.data&&typeof v.data.length==='number')return v.data.length;
+      if(typeof v.length==='number')return v.length;
+      return 0;
+    }
+    function emmcRecentPushFill(fill,count){
+      const n=Math.max(0,parseNum(count,0));
+      const keep=Math.max(16,emmcDumpRowsLimit()*16);
+      for(let i=0;i<n;i++)emmcDumpRecent.push(fill&255);
+      if(emmcDumpRecent.length>keep)emmcDumpRecent=emmcDumpRecent.slice(emmcDumpRecent.length-keep);
+    }
     function emmcAssembleDump(){
       if(!emmcDumpPieces.size)return null;
       const maxEnd=Math.max(0,emmcDumpMaxEnd);
@@ -940,8 +987,18 @@
       const out=new Uint8Array(total);
       const filled=new Uint8Array(total);
       for(const [k,v] of emmcDumpPieces.entries()){
-        out.set(v,k);
-        filled.fill(1,k,Math.min(total,k+v.length));
+        const p=v;
+        if(p&&p.kind==='run'){
+          const len=Math.max(0,parseNum(p.len,0));
+          const end=Math.min(total,k+len);
+          out.fill((parseNum(p.fill,0)&255),k,end);
+          filled.fill(1,k,end);
+        }else{
+          const d=(p&&p.kind==='raw')?p.data:p;
+          if(!d||!d.length)continue;
+          out.set(d,k);
+          filled.fill(1,k,Math.min(total,k+d.length));
+        }
       }
       let missing=0;
       for(let i=0;i<filled.length;i++)if(!filled[i])missing++;
@@ -952,8 +1009,9 @@
       if(!c.length)return;
       const copy=new Uint8Array(c.length);copy.set(c);
       const prev=emmcDumpPieces.get(absOffset);
-      if(prev&&prev.length)emmcDumpStoredBytes=Math.max(0,emmcDumpStoredBytes-prev.length);
-      emmcDumpPieces.set(absOffset,copy);
+      const prevLen=emmcPieceLen(prev);
+      if(prevLen>0)emmcDumpStoredBytes=Math.max(0,emmcDumpStoredBytes-prevLen);
+      emmcDumpPieces.set(absOffset,{kind:'raw',data:copy});
       emmcDumpStoredBytes+=copy.length;
       const end=absOffset+copy.length;
       if(end>emmcDumpMaxEnd)emmcDumpMaxEnd=end;
@@ -961,6 +1019,28 @@
       for(let i=0;i<copy.length;i++)emmcDumpRecent.push(copy[i]);
       const keep=Math.max(16,emmcDumpRowsLimit()*16);
       if(emmcDumpRecent.length>keep)emmcDumpRecent=emmcDumpRecent.slice(emmcDumpRecent.length-keep);
+      if(emmcDumpUiTimer===null){
+        emmcDumpUiTimer=setTimeout(()=>{
+          emmcDumpUiTimer=null;
+          renderEmmcDumpRecent();
+          updateEmmcDumpFileMeta();
+          updateEmmcDumpProgress();
+        },40);
+      }
+    }
+    function appendEmmcDumpRun(absOffset,count,fill){
+      const n=Math.max(0,parseNum(count,0));
+      if(n<=0)return;
+      const f=(parseNum(fill,0)&255);
+      const prev=emmcDumpPieces.get(absOffset);
+      const prevLen=emmcPieceLen(prev);
+      if(prevLen>0)emmcDumpStoredBytes=Math.max(0,emmcDumpStoredBytes-prevLen);
+      emmcDumpPieces.set(absOffset,{kind:'run',len:n,fill:f});
+      emmcDumpStoredBytes+=n;
+      const end=absOffset+n;
+      if(end>emmcDumpMaxEnd)emmcDumpMaxEnd=end;
+      emmcDumpBytes=emmcDumpStoredBytes;
+      emmcRecentPushFill(f,n);
       if(emmcDumpUiTimer===null){
         emmcDumpUiTimer=setTimeout(()=>{
           emmcDumpUiTimer=null;
@@ -1469,6 +1549,59 @@
         appendEmmcDumpChunk(abs,b);
         return true;
       }
+      if(m.type==='emmc.scan.status'){
+        const st=String(m.state||'status');
+        const detail=String(m.detail||'');
+        const done=parseNum(m.done_blocks,0);
+        const total=parseNum(m.total_blocks,0);
+        const cur=parseNum(m.current_lba,0);
+        const ranges=parseNum(m.ranges_found,0);
+        const nonempty=parseNum(m.nonempty_blocks,0);
+        emmcScanStatEl.textContent='scan: '+st+' | sampled '+fmtInt(done)+' / '+fmtInt(total)+
+          ' | current LBA '+fmtInt(cur)+' | non-empty '+fmtInt(nonempty)+' | ranges '+fmtInt(ranges)+
+          (detail?(' | '+detail):'');
+        emmcLog('[emmc.scan.status] '+JSON.stringify(m),st==='error'?'err':'dim');
+        return true;
+      }
+      if(m.type==='emmc.scan.range'){
+        const start=parseNum(m.start_lba,0);
+        const end=parseNum(m.end_lba,start);
+        const span=parseNum(m.span_blocks,Math.max(1,end-start+1));
+        emmcLog('[emmc.scan.range] non-empty LBA '+start+' .. '+end+' (span '+span+' blocks)','ok');
+        return true;
+      }
+      if(m.type==='emmc.scan.result'){
+        const ok=!!m.ok;
+        const msg=String(m.msg||'');
+        const done=parseNum(m.done_blocks,0);
+        const total=parseNum(m.total_blocks,0);
+        const ranges=parseNum(m.ranges_found,0);
+        emmcScanStatEl.textContent='scan: '+(ok?'complete':'error')+' | sampled '+fmtInt(done)+' / '+fmtInt(total)+
+          ' | ranges '+fmtInt(ranges)+(msg?(' | '+msg):'');
+        emmcLog('[emmc.scan] '+JSON.stringify(m),ok?'ok':'err');
+        return true;
+      }
+      if(m.type==='emmc.find_start.status'){
+        const st=String(m.state||'status');
+        const detail=String(m.detail||'');
+        const done=parseNum(m.done_blocks,0);
+        const total=parseNum(m.max_blocks,0);
+        const cur=parseNum(m.current_lba,0);
+        emmcFindStatEl.textContent='find-start: '+st+' | scanned '+fmtInt(done)+' / '+fmtInt(total)+
+          ' | current LBA '+fmtInt(cur)+(detail?(' | '+detail):'');
+        emmcLog('[emmc.find_start.status] '+JSON.stringify(m),st==='error'?'err':'dim');
+        return true;
+      }
+      if(m.type==='emmc.find_start.result'){
+        const ok=!!m.ok;
+        const found=!!m.found;
+        const foundLba=parseNum(m.found_lba,0);
+        const msg=String(m.msg||'');
+        if(found) emmcFindStatEl.textContent='find-start: found at LBA '+fmtInt(foundLba)+(msg?(' | '+msg):'');
+        else emmcFindStatEl.textContent='find-start: '+(ok?'not found':'error')+(msg?(' | '+msg):'');
+        emmcLog('[emmc.find_start] '+JSON.stringify(m),(ok&&found)?'ok':(ok?'dim':'err'));
+        return true;
+      }
       return false;
     }
     function handleSpiMessage(m){
@@ -1676,6 +1809,16 @@
     function appendTextLog(s){if(!s)return;textLog+=s;const lim=termLimit();if(textLog.length>lim)textLog=textLog.slice(-lim);}
     function pushRawLog(bytes){if(!bytes||!bytes.length)return;const c=new Uint8Array(bytes.length);c.set(bytes);rawLogChunks.push(c);rawLogBytes+=c.length;const lim=rawLimit();while(rawLogBytes>lim&&rawLogChunks.length){rawLogBytes-=rawLogChunks[0].length;rawLogChunks.shift();}}
     function saveBlob(name,type,parts){const b=new Blob(parts,{type:type});const a=document.createElement('a');a.href=URL.createObjectURL(b);a.download=name;document.body.appendChild(a);a.click();setTimeout(()=>{URL.revokeObjectURL(a.href);a.remove();},0);}
+    async function gzipBytes(bytes){
+      if(!(bytes&&bytes.length))return new Uint8Array([]);
+      if(typeof CompressionStream==='undefined')return null;
+      const cs=new CompressionStream('gzip');
+      const w=cs.writable.getWriter();
+      await w.write(bytes);
+      await w.close();
+      const ab=await new Response(cs.readable).arrayBuffer();
+      return new Uint8Array(ab);
+    }
     function stamp(){const d=new Date();const p=n=>String(n).padStart(2,'0');return d.getFullYear()+p(d.getMonth()+1)+p(d.getDate())+'_'+p(d.getHours())+p(d.getMinutes())+p(d.getSeconds());}
     function xtermScrollback(){return Math.max(256,Math.min(50000,Math.floor(termLimit()/120)));}
     function trimTerm(){const lim=termLimit();while(termCharCount>lim){const n=term.firstChild;if(!n||n===cursor)break;const l=(n.textContent||'').length;termCharCount-=l;term.removeChild(n);}if(termCharCount<0)termCharCount=0;}
@@ -1722,7 +1865,7 @@
           },1500);
         }
       };
-      ws.onmessage=(e)=>{if(typeof e.data==='string'){try{const m=JSON.parse(e.data);if(m.type==='hello'){aboutFw.textContent=m.fw||'--';aboutBuild.textContent=((m.build_date||'')+' '+(m.build_time||'')).trim()||'--';}else if(m.type==='pong'){}else if(m.type==='uart.config'){if(typeof m.tx_pin==='number'&&typeof m.rx_pin==='number')uartPins.textContent='UART0 pins: TX=GPIO'+m.tx_pin+', RX=GPIO'+m.rx_pin;appendTerm('\n[config '+JSON.stringify(m)+']\n','ok');}else if(m.type==='uart.rxmon'){setRxMonUi(m);}else if(m.type==='system.bootsel'){appendTerm('\n[system entering USB boot mode]\n','ok');spiLog('[system] entering USB boot mode','ok');dbgLog('[system] entering USB boot mode','ok');}else if(m.type==='system.debug'){if(typeof m.level==='number'){dbgLevel.value=String(m.level);dbgStatus.textContent='level '+m.level;}dbgLog('[debug cfg] '+JSON.stringify(m),'dim');}else if(m.type==='debug.log'){dbgLog('L'+(m.level||0)+' '+(m.scope||'sys')+': '+(m.msg||''));}else if(m.type==='error'){appendTerm('\n[error '+(m.msg||'unknown')+']\n','err');dbgLog('[error] '+(m.code||'')+' '+(m.msg||'unknown'),'err');if((m.code||'').startsWith('SPI_')){spiLog('[spi.error] '+(m.msg||m.code),'err');spiDump.textContent='dump: error ('+(m.msg||m.code)+')';}if((m.code||'').startsWith('EMMC_')){emmcLog('[emmc.error] '+(m.msg||m.code),'err');}}else if(m.type&&m.type.startsWith('spi.')){if(!handleSpiMessage(m))spiLog('[spi] '+JSON.stringify(m));}else if(m.type&&m.type.startsWith('emmc.')){if(!handleEmmcMessage(m))emmcLog('[emmc] '+JSON.stringify(m));}else{appendTerm('\n['+e.data+']\n');}}catch(_){appendTerm(e.data);}}else{const b=new Uint8Array(e.data);if(b.length>=2&&b[0]===WS_BIN_MAGIC){const ch=b[1];if(ch===WS_CH_UART){queueRx(b.slice(2));}else if(ch===WS_CH_SPI_DUMP_DATA&&b.length>=8){const off=le32(b,2);const cnt=le16(b,6);const p=b.slice(8,8+cnt);if((off||0)+p.length>dumpExpectedBytes)dumpExpectedBytes=(off||0)+p.length;dumpAppendBytes(p);spiDump.textContent='dump offset '+off+' data '+p.length+' bytes';}else if(ch===WS_CH_SPI_DUMP_FF&&b.length>=8){const off=le32(b,2);const cnt=le16(b,6);if((off||0)+cnt>dumpExpectedBytes)dumpExpectedBytes=(off||0)+cnt;dumpAppendBytes(new Uint8Array(cnt).fill(0xFF));spiDump.textContent='dump offset '+off+' ff-run '+cnt+' bytes';}else if(ch===WS_CH_EMMC_DUMP_DATA&&b.length>=8){const off=le32(b,2);const cnt=le16(b,6);const p=b.slice(8,8+cnt);appendEmmcDumpChunk(off,p);}else if(ch===WS_CH_EMMC_DUMP_RUN&&b.length>=9){const off=le32(b,2);const cnt=le16(b,6);const fill=b[8]||0;appendEmmcDumpChunk(off,new Uint8Array(cnt).fill(fill));} }else{queueRx(b);}}};
+      ws.onmessage=(e)=>{if(typeof e.data==='string'){try{const m=JSON.parse(e.data);if(m.type==='hello'){aboutFw.textContent=m.fw||'--';aboutBuild.textContent=((m.build_date||'')+' '+(m.build_time||'')).trim()||'--';}else if(m.type==='pong'){}else if(m.type==='uart.config'){if(typeof m.tx_pin==='number'&&typeof m.rx_pin==='number')uartPins.textContent='UART0 pins: TX=GPIO'+m.tx_pin+', RX=GPIO'+m.rx_pin;appendTerm('\n[config '+JSON.stringify(m)+']\n','ok');}else if(m.type==='uart.rxmon'){setRxMonUi(m);}else if(m.type==='system.bootsel'){appendTerm('\n[system entering USB boot mode]\n','ok');spiLog('[system] entering USB boot mode','ok');dbgLog('[system] entering USB boot mode','ok');}else if(m.type==='system.debug'){if(typeof m.level==='number'){dbgLevel.value=String(m.level);dbgStatus.textContent='level '+m.level;}dbgLog('[debug cfg] '+JSON.stringify(m),'dim');}else if(m.type==='debug.log'){dbgLog('L'+(m.level||0)+' '+(m.scope||'sys')+': '+(m.msg||''));}else if(m.type==='error'){appendTerm('\n[error '+(m.msg||'unknown')+']\n','err');dbgLog('[error] '+(m.code||'')+' '+(m.msg||'unknown'),'err');if((m.code||'').startsWith('SPI_')){spiLog('[spi.error] '+(m.msg||m.code),'err');spiDump.textContent='dump: error ('+(m.msg||m.code)+')';}if((m.code||'').startsWith('EMMC_')){emmcLog('[emmc.error] '+(m.msg||m.code),'err');}}else if(m.type&&m.type.startsWith('spi.')){if(!handleSpiMessage(m))spiLog('[spi] '+JSON.stringify(m));}else if(m.type&&m.type.startsWith('emmc.')){if(!handleEmmcMessage(m))emmcLog('[emmc] '+JSON.stringify(m));}else{appendTerm('\n['+e.data+']\n');}}catch(_){appendTerm(e.data);}}else{const b=new Uint8Array(e.data);if(b.length>=2&&b[0]===WS_BIN_MAGIC){const ch=b[1];if(ch===WS_CH_UART){queueRx(b.slice(2));}else if(ch===WS_CH_SPI_DUMP_DATA&&b.length>=8){const off=le32(b,2);const cnt=le16(b,6);const p=b.slice(8,8+cnt);if((off||0)+p.length>dumpExpectedBytes)dumpExpectedBytes=(off||0)+p.length;dumpAppendBytes(p);spiDump.textContent='dump offset '+off+' data '+p.length+' bytes';}else if(ch===WS_CH_SPI_DUMP_FF&&b.length>=8){const off=le32(b,2);const cnt=le16(b,6);if((off||0)+cnt>dumpExpectedBytes)dumpExpectedBytes=(off||0)+cnt;dumpAppendBytes(new Uint8Array(cnt).fill(0xFF));spiDump.textContent='dump offset '+off+' ff-run '+cnt+' bytes';}else if(ch===WS_CH_EMMC_DUMP_DATA&&b.length>=8){const off=le32(b,2);const cnt=le16(b,6);const p=b.slice(8,8+cnt);appendEmmcDumpChunk(off,p);}else if(ch===WS_CH_EMMC_DUMP_RUN&&b.length>=9){const off=le32(b,2);const cnt=le16(b,6);const fill=b[8]||0;appendEmmcDumpRun(off,cnt,fill);} }else{queueRx(b);}}};
     }
 
     function openWs(){
@@ -1831,6 +1974,52 @@
       saveBlob('emmc_dump_'+st+'.bin','application/octet-stream',[asm.bytes]);
       if(asm.missing>0) emmcLog('[emmc.dump] downloaded '+asm.total+' bytes with '+asm.missing+' missing bytes (filled as 00)','err');
       else emmcLog('[emmc.dump] downloaded '+asm.total+' bytes complete','ok');
+    };
+    emmcDumpDlGzBtn.onclick=async ()=>{
+      const asm=emmcAssembleDump();
+      if(!asm){emmcLog('[emmc.dump] nothing captured yet','dim');return;}
+      const st=emmcDumpStartStamp||stamp();
+      const gz=await gzipBytes(asm.bytes);
+      if(!gz){
+        emmcLog('[emmc.dump] gzip not supported by this browser','err');
+        return;
+      }
+      saveBlob('emmc_dump_'+st+'.bin.gz','application/gzip',[gz]);
+      emmcLog('[emmc.dump] downloaded gzip '+asm.total+' -> '+gz.length+' bytes','ok');
+    };
+    emmcScanStartBtn.onclick=()=>{
+      let startTxt=String(emmcScanStartEl.value||'').trim().toLowerCase();
+      const start=startTxt.startsWith('0x')?parseHexU32(startTxt,0):Math.max(0,parseNum(startTxt,0));
+      const skip=Math.max(0,parseNum(emmcScanSkipEl.value,255));
+      const total=Math.max(1,parseNum(emmcScanTotalEl.value,4096));
+      emmcScanStatEl.textContent='scan: starting...';
+      emmcSend('emmc.scan.start',{
+        start_lba:start>>>0,
+        skip_blocks:skip>>>0,
+        total_blocks:total>>>0,
+        retry_idle_clks:parseNum(emmcRetryIdle.value,8),
+        auto_retries:Math.max(0,Math.min(32,parseNum(emmcDumpARetryEl.value,4)))
+      });
+    };
+    emmcScanStopBtn.onclick=()=>{
+      emmcScanStatEl.textContent='scan: stopping...';
+      emmcSend('emmc.scan.stop');
+    };
+    emmcFindStartBtn.onclick=()=>{
+      let startTxt=String(emmcFindStartEl.value||'').trim().toLowerCase();
+      const start=startTxt.startsWith('0x')?parseHexU32(startTxt,0):Math.max(0,parseNum(startTxt,0));
+      const maxBlocks=Math.max(1,parseNum(emmcFindMaxEl.value,4096));
+      emmcFindStatEl.textContent='find-start: starting...';
+      emmcSend('emmc.find_start.start',{
+        start_lba:start>>>0,
+        max_blocks:maxBlocks>>>0,
+        retry_idle_clks:parseNum(emmcRetryIdle.value,8),
+        auto_retries:Math.max(0,Math.min(32,parseNum(emmcDumpARetryEl.value,4)))
+      });
+    };
+    emmcFindStopBtn.onclick=()=>{
+      emmcFindStatEl.textContent='find-start: stopping...';
+      emmcSend('emmc.find_start.stop');
     };
     sfdpReadBtn.onclick=()=>{spiSend('spi.sfdp.read',{length:parseNum(sfdpLen.value,256)});};
     spiStatusReadBtn.onclick=()=>{spiSend('spi.status.read');};
