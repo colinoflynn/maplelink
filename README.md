@@ -1,4 +1,4 @@
-# MapleLink: USB Serial + SPI Dumper with a (Offline) Web Interface
+# MapleLink: USB Serial + SPI & slow eMMC Dumper with a (Offline) Web Interface
 
 Do you want to do some basic hardware hacking, but don't want to deal with installing tools? This project makes it (somewhat) easy to get into hardware
 hacking, requiring only a R-Pi Pico and some wires (and probably logic clips).
@@ -25,12 +25,16 @@ hacking, requiring only a R-Pi Pico and some wires (and probably logic clips).
 * SPI RAW features:
   * Send arbitrary SPI commands to a device, including extra padding FF's
   * Lets you set 10 quick-access fields to transmit different commands (can change the number in html file)
+* eMMC Features:
+ * Mostly experimental implementation
+ * Reads ID, sizes
+ * Very slow dumping of user partition
 * Re-enable R-Pi bootloader for easy development without touching a USB cable
 * Front-end and most processing code written by AI, I have no idea what it does or how it works (as god intended)
 
 ### Speed Examples
 
-Some test on my computer:
+Some test on my computer for SPI:
 
 | Flash size | SCK   | Double-read on? | Time (MM:SS) |
 |------------|-------|-----|------|
@@ -53,6 +57,8 @@ Some test on my computer:
 ### SPI Dump: Detecting Conflicting Access
 
 ### SPI Raw Packet Mode
+
+### eMMC Mode
 
 ## Developer Notes
 
