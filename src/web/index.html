@@ -5,7 +5,7 @@
   <title>MapleLink: Pico USB Serial and SPI Tool</title>
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <style>
-    :root { --bg:#0b0f14; --bg2:#111827; --fg:#e6edf3; --dim:#9ca3af; --line:#334155; --ok:#22c55e; --err:#ef4444; }
+    :root { --bg:#0b0f14; --bg2:#111827; --fg:#e6edf3; --dim:#9ca3af; --line:#334155; --ok:#22c55e; --err:#ef4444; --term-bg:#0b0f14; --term-fg:#e6edf3; --term-hex-fg:#93c5fd; --term-hex-bg:#0a1222; --term-shadow:none; }
     body { margin:0; background:var(--bg); color:var(--fg); font:14px/1.4 monospace; }
     .bar { padding:8px; border-bottom:1px solid #1f2937; background:var(--bg2); display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
     .tabs { position:sticky; top:0; z-index:5; }
@@ -47,9 +47,10 @@
     #shell.vt #term { display:none; }
     #shell.vt #termvt { display:block; }
     .pane { min-height:0; overflow:auto; padding:10px 10px 22px 10px; white-space:pre-wrap; word-break:break-word; border-right:1px solid #1f2937; outline:none; }
-    #term { color:var(--fg); }
-    #termvt { display:none; padding:0; white-space:normal; word-break:normal; }
-    #hex { color:#93c5fd; background:#0a1222; display:none; }
+    #term { color:var(--term-fg); text-shadow:var(--term-shadow); }
+    #termvt { display:none; padding:0; white-space:normal; word-break:normal; background:var(--term-bg); }
+    #hex { color:var(--term-hex-fg); background:var(--term-hex-bg); display:none; }
+    #shell { background:var(--term-bg); }
     #shell.hex #hex { display:block; }
     .ok{color:var(--ok)} .err{color:var(--err)} .dim{color:var(--dim)}
     .ansi-bold{font-weight:bold}
@@ -160,6 +161,13 @@
     <label>Enter <select id="enter"><option value="none">none</option><option value="cr">\r</option><option value="lf">\n</option><option value="crlf" selected>\r\n</option></select></label>
     <label>Send <select id="sendmode"><option value="type">as you type</option><option value="line">on Enter only</option></select></label>
     <label>Decode <select id="decode"><option value="plain">plain</option><option value="ansi">ansi colors</option><option value="vt100">vt100 (xterm.js)</option></select></label>
+    <label>Terminal Theme <select id="termtheme">
+      <option value="default" selected>default</option>
+      <option value="matrix">matrix</option>
+      <option value="rainbow">rainbow</option>
+      <option value="pink">pink</option>
+      <option value="hotpink">hot pink</option>
+    </select></label>
     <label><input id="hexview" type="checkbox">hex view</label>
     <label>Hex cols <input id="hexcols" type="number" value="16" min="4" max="64" step="1"></label>
     <label>Hex gap ms <input id="hexgap" type="number" value="100" min="10" max="2000" step="10"></label>
@@ -468,7 +476,7 @@
       </div>
     </div>
     <div class="group">
-      <div class="gtitle">Dump (Experimental)</div>
+      <div class="gtitle">Dump</div>
       <div class="grow">
         <label>Filename Prefix <input id="emmcdumpprefix" type="text" value="emmc_dump_" style="width:140px"></label>
         <label>Start LBA <input id="emmcdumpstart" type="text" value="0"></label>
@@ -802,6 +810,7 @@
     const sendMode=document.getElementById('sendmode');
     const enterMode=document.getElementById('enter');
     const decodeMode=document.getElementById('decode');
+    const termThemeSel=document.getElementById('termtheme');
     const hexView=document.getElementById('hexview');
     const hexCols=document.getElementById('hexcols');
     const hexGap=document.getElementById('hexgap');
@@ -833,6 +842,7 @@
     let xterm=null;
     let xtermLoading=false;
     let xtermFailed=false;
+    let rainbowPhase=0;
     const MAX_HISTORY=12;
     const textHistory=[];
     const hexHistory=[];
@@ -2065,7 +2075,34 @@
     function xtermScrollback(){return Math.max(256,Math.min(50000,Math.floor(termLimit()/120)));}
     function trimTerm(){const lim=termLimit();while(termCharCount>lim){const n=term.firstChild;if(!n||n===cursor)break;const l=(n.textContent||'').length;termCharCount-=l;term.removeChild(n);}if(termCharCount<0)termCharCount=0;}
     function atBottom(el){return el.scrollHeight-el.scrollTop-el.clientHeight<8;}
-    function appendTerm(text,cls){const stick=atBottom(term);const span=document.createElement('span');if(cls)span.className=cls;span.textContent=text;term.appendChild(span);appendTextLog(text);termCharCount+=text.length;trimTerm();keepCursor();if(stick&&!scrollLock.checked)term.scrollTop=term.scrollHeight;}
+    function appendTerm(text,cls){
+      const stick=atBottom(term);
+      const rainbow=(terminalThemeName()==='rainbow'&&decodeMode.value!=='vt100'&&text&&text.length>0&&text.length<=256);
+      if(rainbow){
+        const frag=document.createDocumentFragment();
+        for(let i=0;i<text.length;i++){
+          const ch=document.createElement('span');
+          if(cls)ch.className=cls;
+          const hue=(rainbowPhase+(i*17))%360;
+          ch.style.color='hsl('+hue+' 100% 72%)';
+          ch.style.textShadow='0 0 2px rgba(255,255,255,.12)';
+          ch.textContent=text[i];
+          frag.appendChild(ch);
+        }
+        term.appendChild(frag);
+        rainbowPhase=(rainbowPhase+(text.length*17))%360;
+      }else{
+        const span=document.createElement('span');
+        if(cls)span.className=cls;
+        span.textContent=text;
+        term.appendChild(span);
+      }
+      appendTextLog(text);
+      termCharCount+=text.length;
+      trimTerm();
+      keepCursor();
+      if(stick&&!scrollLock.checked)term.scrollTop=term.scrollHeight;
+    }
     function appendTermStyled(text){const cls=[sgr.bold?'ansi-bold':'',sgr.fg,sgr.bg].filter(Boolean).join(' ');appendTerm(text,cls);}
     function parseSgr(code){if(!code||code==='0'){sgr.bold=false;sgr.fg='';sgr.bg='';return;}code.split(';').forEach(c=>{const n=parseInt(c||'0',10);if(n===0){sgr.bold=false;sgr.fg='';sgr.bg='';}else if(n===1)sgr.bold=true;else if(n===22)sgr.bold=false;else if(n===39)sgr.fg='';else if(n===49)sgr.bg='';else if((n>=30&&n<=37)||(n>=90&&n<=97))sgr.fg='fg'+n;else if((n>=40&&n<=47)||(n>=100&&n<=107))sgr.bg='bg'+n;});}
     function appendAnsi(text){let i=0;while(i<text.length){const esc=text.indexOf('\u001b[',i);if(esc<0){appendTermStyled(text.slice(i));break;}if(esc>i)appendTermStyled(text.slice(i,esc));const m=/^\u001b\[([0-9;]*)m/.exec(text.slice(esc));if(!m){appendTermStyled(text.slice(esc,esc+1));i=esc+1;continue;}parseSgr(m[1]);i=esc+m[0].length;}}
@@ -2083,7 +2120,32 @@
     function send(o){if(ws&&ws.readyState===1)ws.send(JSON.stringify(o));}
     function loadScript(src){return new Promise((ok,fail)=>{const s=document.createElement('script');s.src=src;s.onload=ok;s.onerror=fail;document.head.appendChild(s);});}
     function loadCss(href){if(document.querySelector('link[data-xterm]'))return;const l=document.createElement('link');l.rel='stylesheet';l.href=href;l.setAttribute('data-xterm','1');document.head.appendChild(l);}
-    async function ensureXterm(){if(xterm||xtermLoading||xtermFailed)return;xtermLoading=true;try{loadCss('__XTERM_CSS_URL__');if(!window.Terminal){try{await loadScript('__XTERM_JS_PRIMARY__');}catch(_){await loadScript('__XTERM_JS_FALLBACK__');}}xterm=new window.Terminal({cursorBlink:true,convertEol:false,scrollback:xtermScrollback(),theme:{background:'#0b0f14',foreground:'#e6edf3'}});xterm.open(termVt);xterm.onData(d=>sendBinary(enc.encode(d)));xterm.write('\r\n[VT100 mode active]\r\n');}catch(_){xtermFailed=true;appendTerm('\n[error failed to load xterm.js, check internet access]\n','err');decodeMode.value='ansi';shell.classList.remove('vt');}finally{xtermLoading=false;}}
+    function terminalThemeName(){return String((termThemeSel&&termThemeSel.value)||'default').toLowerCase();}
+    function terminalThemePalette(name){
+      const n=String(name||'default').toLowerCase();
+      if(n==='matrix') return {termBg:'#040904',termFg:'#7dff78',hexFg:'#78f57a',hexBg:'#030a03',termShadow:'0 0 4px rgba(125,255,120,.22)',xterm:{background:'#040904',foreground:'#7dff78',cursor:'#7dff78',selectionBackground:'rgba(125,255,120,.30)'}};
+      if(n==='rainbow') return {termBg:'#12061f',termFg:'#ffd9ff',hexFg:'#ffe4a3',hexBg:'#160a24',termShadow:'0 0 3px rgba(255,77,166,.25)',xterm:{background:'#12061f',foreground:'#ffd9ff',cursor:'#22d3ee',selectionBackground:'rgba(236,72,153,.35)'}};
+      if(n==='pink') return {termBg:'#130914',termFg:'#ffb7e8',hexFg:'#ff9ee2',hexBg:'#1a0b1a',termShadow:'none',xterm:{background:'#130914',foreground:'#ffb7e8',cursor:'#ff7bd5',selectionBackground:'rgba(255,123,213,.30)'}};
+      if(n==='hotpink') return {termBg:'#170610',termFg:'#ff5ccf',hexFg:'#ff8fe0',hexBg:'#1d0815',termShadow:'0 0 4px rgba(255,92,207,.35)',xterm:{background:'#170610',foreground:'#ff5ccf',cursor:'#ff85dc',selectionBackground:'rgba(255,92,207,.38)'}};
+      return {termBg:'#0b0f14',termFg:'#e6edf3',hexFg:'#93c5fd',hexBg:'#0a1222',termShadow:'none',xterm:{background:'#0b0f14',foreground:'#e6edf3',cursor:'#e6edf3',selectionBackground:'rgba(147,197,253,.25)'}};
+    }
+    function applyTerminalTheme(){
+      const p=terminalThemePalette(terminalThemeName());
+      if(terminalThemeName()!=='rainbow')rainbowPhase=0;
+      const root=document.documentElement.style;
+      root.setProperty('--term-bg',p.termBg);
+      root.setProperty('--term-fg',p.termFg);
+      root.setProperty('--term-hex-fg',p.hexFg);
+      root.setProperty('--term-hex-bg',p.hexBg);
+      root.setProperty('--term-shadow',p.termShadow);
+      if(xterm){
+        try{
+          xterm.options.theme=Object.assign({},xterm.options.theme||{},p.xterm||{});
+          if(typeof xterm.refresh==='function')xterm.refresh(0,xterm.rows-1);
+        }catch(_){}
+      }
+    }
+    async function ensureXterm(){if(xterm||xtermLoading||xtermFailed)return;xtermLoading=true;try{loadCss('__XTERM_CSS_URL__');if(!window.Terminal){try{await loadScript('__XTERM_JS_PRIMARY__');}catch(_){await loadScript('__XTERM_JS_FALLBACK__');}}const p=terminalThemePalette(terminalThemeName());xterm=new window.Terminal({cursorBlink:true,convertEol:false,scrollback:xtermScrollback(),theme:p.xterm});xterm.open(termVt);xterm.onData(d=>sendBinary(enc.encode(d)));xterm.write('\r\n[VT100 mode active]\r\n');}catch(_){xtermFailed=true;appendTerm('\n[error failed to load xterm.js, check internet access]\n','err');decodeMode.value='ansi';shell.classList.remove('vt');}finally{xtermLoading=false;}}
     function syncDecodeMode(){if(decodeMode.value==='vt100'){shell.classList.add('vt');ensureXterm();}else{shell.classList.remove('vt');}layoutTerminalShell();}
 
     function attachWsHandlers(){
@@ -2131,6 +2193,7 @@
     hexCols.addEventListener('input',()=>{hexOffset=0;hex.textContent='';});
     retainKb.addEventListener('input',()=>{if(xterm)xterm.options.scrollback=xtermScrollback();});
     decodeMode.addEventListener('change',syncDecodeMode);
+    if(termThemeSel)termThemeSel.addEventListener('change',applyTerminalTheme);
     rxMonEn.addEventListener('change',()=>{send({type:rxMonEn.checked?'uart.rxmon.start':'uart.rxmon.stop'});});
     rxMonReset.addEventListener('click',()=>{
       rxMonEdgesTotal=0;
@@ -2359,6 +2422,7 @@
     layoutTerminalShell();
     layoutSpiLog();
     layoutEmmcLog();
+    applyTerminalTheme();
     syncDecodeMode();
     buildRawRows();
     resetPinUi();
