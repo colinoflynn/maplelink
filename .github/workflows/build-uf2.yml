@@ -13,6 +13,16 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        variant:
+          - name: ecm-rndis
+            use_ecm: "1"
+            suffix: ecm-rndis
+          - name: ncm
+            use_ecm: ""
+            suffix: ncm
 
     steps:
       - name: Checkout repository
@@ -33,15 +43,34 @@ jobs:
           git clone --depth 1 https://github.com/raspberrypi/pico-sdk.git "$HOME/pico-sdk"
           git -C "$HOME/pico-sdk" submodule update --init
 
+      - name: Compute build metadata
+        id: meta
+        run: |
+          echo "commit_id=$(git rev-parse --short=12 HEAD)" >> "$GITHUB_OUTPUT"
+
       - name: Configure CMake
-        run: cmake -S . -B build -G Ninja -DPICO_SDK_PATH="$HOME/pico-sdk"
+        run: |
+          if [ -n "${{ matrix.variant.use_ecm }}" ]; then
+            cmake -S . -B "build-${{ matrix.variant.suffix }}" -G Ninja \
+              -DPICO_SDK_PATH="$HOME/pico-sdk" \
+              -DCMAKE_C_FLAGS="-DUSE_ECM=${{ matrix.variant.use_ecm }}"
+          else
+            cmake -S . -B "build-${{ matrix.variant.suffix }}" -G Ninja \
+              -DPICO_SDK_PATH="$HOME/pico-sdk"
+          fi
 
       - name: Build firmware
-        run: cmake --build build --parallel
+        run: cmake --build "build-${{ matrix.variant.suffix }}" --parallel
+
+      - name: Rename UF2 artifact
+        run: |
+          mkdir -p dist
+          cp "build-${{ matrix.variant.suffix }}/picowebserverspi.uf2" \
+            "dist/maplelink-${{ steps.meta.outputs.commit_id }}-${{ matrix.variant.suffix }}.uf2"
 
       - name: Upload UF2 artifact
         uses: actions/upload-artifact@v4
         with:
-          name: picowebserverspi-uf2
-          path: build/*.uf2
+          name: maplelink-${{ matrix.variant.suffix }}-uf2
+          path: dist/maplelink-${{ steps.meta.outputs.commit_id }}-${{ matrix.variant.suffix }}.uf2
           if-no-files-found: error
