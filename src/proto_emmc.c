@@ -99,6 +99,9 @@ typedef struct {
   uint32_t dump_stat_crc_fail;
   uint32_t dump_stat_resync_fail;
   uint32_t dump_stat_tx_busy;
+  uint32_t dump_stat_block_normal;
+  uint32_t dump_stat_block_all00;
+  uint32_t dump_stat_block_allff;
   uint8_t dump_block_buf[EMMC_DUMP_BLOCK_SIZE];
   uint8_t dump_check_buf[EMMC_DUMP_BLOCK_SIZE];
   uint32_t last_dump_ms;
@@ -140,6 +143,9 @@ static emmc_state_t g_emmc = {
     .dump_stat_crc_fail = 0u,
     .dump_stat_resync_fail = 0u,
     .dump_stat_tx_busy = 0u,
+    .dump_stat_block_normal = 0u,
+    .dump_stat_block_all00 = 0u,
+    .dump_stat_block_allff = 0u,
     .last_dump_ms = 0u,
     .dump_last_progress_ms = 0u,
     .dump_last_status_ms = 0u,
@@ -693,7 +699,8 @@ static bool send_dump_status(const char *state, const char *detail) {
            "\"start_lba\":%lu,\"current_lba\":%lu,\"done_blocks\":%lu,\"total_blocks\":%lu,"
            "\"read_attempts\":%lu,\"read_ok\":%lu,\"read_err\":%lu,\"read_err_pct_x10\":%lu,"
            "\"cmd17_tries\":%lu,\"no_r1\":%lu,\"data_fail\":%lu,\"crc_fail\":%lu,"
-           "\"resync_fail\":%lu,\"tx_busy\":%lu}",
+           "\"resync_fail\":%lu,\"tx_busy\":%lu,"
+           "\"block_normal\":%lu,\"block_all00\":%lu,\"block_allff\":%lu}",
            state ? state : "status", detail ? detail : "",
            (unsigned long)g_emmc.dump_start_lba,
            (unsigned long)(g_emmc.dump_start_lba + g_emmc.dump_done_blocks),
@@ -701,7 +708,10 @@ static bool send_dump_status(const char *state, const char *detail) {
            (unsigned long)attempts, (unsigned long)ok, (unsigned long)err, (unsigned long)err_pct_x10,
            (unsigned long)g_emmc.dump_stat_cmd17_tries, (unsigned long)g_emmc.dump_stat_no_r1,
            (unsigned long)g_emmc.dump_stat_data_fail, (unsigned long)g_emmc.dump_stat_crc_fail,
-           (unsigned long)g_emmc.dump_stat_resync_fail, (unsigned long)g_emmc.dump_stat_tx_busy);
+           (unsigned long)g_emmc.dump_stat_resync_fail, (unsigned long)g_emmc.dump_stat_tx_busy,
+           (unsigned long)g_emmc.dump_stat_block_normal,
+           (unsigned long)g_emmc.dump_stat_block_all00,
+           (unsigned long)g_emmc.dump_stat_block_allff);
   return app_send_text(out);
 }
 
@@ -1588,6 +1598,9 @@ bool proto_emmc_handle_text(const char *type, const char *json) {
     g_emmc.dump_stat_crc_fail = 0u;
     g_emmc.dump_stat_resync_fail = 0u;
     g_emmc.dump_stat_tx_busy = 0u;
+    g_emmc.dump_stat_block_normal = 0u;
+    g_emmc.dump_stat_block_all00 = 0u;
+    g_emmc.dump_stat_block_allff = 0u;
     g_emmc.last_dump_ms = now_ms();
     g_emmc.dump_last_progress_ms = g_emmc.last_dump_ms;
     g_emmc.dump_last_status_ms = g_emmc.last_dump_ms;
