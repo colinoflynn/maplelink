@@ -17,6 +17,31 @@
     .grow { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
     label { display:flex; gap:6px; align-items:center; }
     input, select, button { background:#0f172a; color:var(--fg); border:1px solid var(--line); padding:4px 8px; }
+    button {
+      cursor:pointer;
+      transition:background-color .14s ease, border-color .14s ease, transform .06s ease, box-shadow .16s ease, color .14s ease;
+    }
+    button:hover {
+      border-color:#60a5fa;
+      background:#12233f;
+    }
+    button:active {
+      transform:translateY(0.5px) scale(0.997);
+      border-color:#38bdf8;
+      background:#10243a;
+      box-shadow:0 0 0 1px rgba(56,189,248,.28) inset;
+    }
+    button:focus-visible {
+      outline:none;
+      box-shadow:0 0 0 2px rgba(59,130,246,.55);
+    }
+    .btn-clicked {
+      animation:btnclick 180ms ease-out;
+    }
+    @keyframes btnclick {
+      0% { box-shadow:0 0 0 0 rgba(56,189,248,.30), 0 0 0 1px rgba(56,189,248,.22) inset; }
+      100% { box-shadow:0 0 0 5px rgba(56,189,248,0), 0 0 0 1px rgba(56,189,248,0) inset; }
+    }
     #shell { display:grid; grid-template-columns:1fr; gap:0; height:320px; min-height:220px; }
     #shell.hex { grid-template-columns:2fr 1fr; }
     #shell.vt #term { display:none; }
@@ -74,6 +99,11 @@
     .dbar { margin-top:8px; border:1px solid #334155; background:#0b1220; border-radius:6px; padding:8px; }
     .dumpmeta { font-size:12px; color:#cbd5e1; margin-bottom:6px; }
     .dumprate { font-size:12px; color:#93c5fd; margin-top:4px; }
+    .runactive {
+      color:#22d3ee !important;
+      text-shadow:0 0 8px rgba(34,211,238,.65);
+      transition:color .18s ease, text-shadow .18s ease;
+    }
     .prog { width:100%; height:14px; }
     #spilasthex { margin-top:8px; border:1px solid #334155; background:#0a1222; border-radius:6px; padding:8px; color:#93c5fd; font-size:12px; white-space:pre; overflow:auto; max-height:220px; }
     #emmcdumplast { margin-top:8px; border:1px solid #334155; background:#0a1222; border-radius:6px; padding:8px; color:#93c5fd; font-size:12px; white-space:pre; overflow:hidden; max-height:none; }
@@ -82,6 +112,31 @@
     .rawrow { display:grid; grid-template-columns:minmax(260px,1fr) auto auto; gap:8px; align-items:center; margin-bottom:6px; }
     .rawrow input[type="text"] { width:100%; }
     #rawout { height:calc(100vh - 280px); overflow:auto; padding:10px; white-space:pre-wrap; border-top:1px solid #1f2937; color:#cbd5e1; background:#0a1222; }
+    #debugPanel a {
+      color:#67e8f9;
+      text-decoration:underline;
+      text-decoration-color:rgba(103,232,249,.7);
+      text-underline-offset:2px;
+      font-weight:600;
+    }
+    #debugPanel a:hover,
+    #debugPanel a:focus {
+      color:#a5f3fc;
+      text-decoration-color:rgba(165,243,252,.98);
+      outline:none;
+    }
+    #emmcscanrows tr.scan-empty td {
+      color:#94a3b8;
+      background:rgba(15,23,42,.45);
+    }
+    #emmcscanrows tr.scan-nonempty td {
+      color:#d1fae5;
+      background:rgba(6,78,59,.28);
+    }
+    #emmcscanrows tr.scan-nonempty td:nth-child(2) {
+      color:#86efac;
+      font-weight:700;
+    }
   </style>
 </head>
 <body>
@@ -415,6 +470,7 @@
     <div class="group">
       <div class="gtitle">Dump (Experimental)</div>
       <div class="grow">
+        <label>Filename Prefix <input id="emmcdumpprefix" type="text" value="emmc_dump_" style="width:140px"></label>
         <label>Start LBA <input id="emmcdumpstart" type="text" value="0"></label>
         <label>Blocks <input id="emmcdumpblocks" type="number" min="1" step="1" value="16"></label>
         <label>Chunk <input id="emmcdumpchunk" type="number" min="16" max="256" step="16" value="256"></label>
@@ -428,6 +484,7 @@
         <button id="emmcdumpdlgzbtn">Download GZip</button>
         <span class="dim" id="emmcdumpfilemeta">emmc_dump_--.bin (0 bytes)</span>
       </div>
+      <div class="dim" id="emmcdumpplan">Plan: --</div>
       <div class="dim" id="emmcdumpstat">dump: idle</div>
       <div class="dumprate" id="emmcdumprate">Rate: --</div>
       <div class="dumprate" id="emmcdumperr">Errors: --</div>
@@ -437,12 +494,25 @@
       <div class="gtitle">Scan Memory</div>
       <div class="grow">
         <label>Start LBA <input id="emmcscanstart" type="text" value="0"></label>
-        <label>Skip Blocks <input id="emmcscanskip" type="number" min="0" step="1" value="255"></label>
-        <label>Total Blocks <input id="emmcscantotal" type="number" min="1" step="1" value="4096"></label>
+        <label>Sample Every n= <input id="emmcscanskip" type="number" min="0" step="1" value="255"></label>
+        <label>Total Samples <input id="emmcscantotal" type="number" min="1" step="1" value="4096"></label>
+        <label>Min Span (blocks) <input id="emmcscanminspan" type="number" min="0" step="1" value="0"></label>
         <button id="emmcscanstartbtn">Start Scan</button>
         <button id="emmcscanstopbtn">Stop Scan</button>
+        <button id="emmcscanclearbtn">Clear Results</button>
       </div>
+      <div class="dim" id="emmcscanplan">Plan: --</div>
       <div class="dim" id="emmcscanstat">scan: idle</div>
+      <div class="idbox">
+        <table class="wmap">
+          <thead>
+            <tr><th>#</th><th>Type</th><th>Start LBA</th><th>End LBA</th><th>Span (blocks)</th><th>Size (bytes)</th></tr>
+          </thead>
+          <tbody id="emmcscanrows">
+            <tr id="emmcscanempty"><td colspan="6" class="dim">No results yet</td></tr>
+          </tbody>
+        </table>
+      </div>
     </div>
     <div class="group">
       <div class="gtitle">Find Start</div>
@@ -452,6 +522,7 @@
         <button id="emmcfindstartbtn">Start Find</button>
         <button id="emmcfindstopbtn">Stop Find</button>
       </div>
+      <div class="dim" id="emmcfindplan">Plan: --</div>
       <div class="dim" id="emmcfindstat">find-start: idle</div>
     </div>
     <div id="emmcout"></div>
@@ -478,14 +549,20 @@
     <div id="rawout"></div>
   </div>
 
-  <div id="debugPanel" class="hidden">
-    <div class="group">
-      <div class="gtitle">About</div>
-      <div class="idgrid">
-        <div class="idlbl">Product</div><div class="idval">MapleLink: Pico USB Serial and SPI Tool</div>
-        <div class="idlbl">Firmware</div><div class="idval" id="aboutFw">--</div>
-        <div class="idlbl">Build Date/Time</div><div class="idval" id="aboutBuild">--</div>
-      </div>
+    <div id="debugPanel" class="hidden">
+      <div class="group">
+        <div class="gtitle">About</div>
+        <div class="dim" style="margin-bottom:8px;">
+          MapleLink is a browser-based hardware hacking tool by
+          <a href="https://bsky.app/profile/oflynn.com" target="_blank" rel="noopener noreferrer">Colin O'Flynn</a>.
+          See more at
+          <a href="https://github.com/colinoflynn/maplelink" target="_blank" rel="noopener noreferrer">github.com/colinoflynn/maplelink</a>
+        </div>
+        <div class="idgrid">
+          <div class="idlbl">Product</div><div class="idval">MapleLink: Pico USB Serial and SPI Tool</div>
+          <div class="idlbl">Firmware</div><div class="idval" id="aboutFw">--</div>
+          <div class="idlbl">Build Date/Time</div><div class="idval" id="aboutBuild">--</div>
+        </div>
     </div>
     <div class="group">
       <div class="gtitle">Debug Controls</div>
@@ -595,6 +672,7 @@
     const emmcIdStartBtn=document.getElementById('emmcidstart');
     const emmcIdStopBtn=document.getElementById('emmcidstop');
     const emmcDumpStartEl=document.getElementById('emmcdumpstart');
+    const emmcDumpPrefixEl=document.getElementById('emmcdumpprefix');
     const emmcDumpBlocksEl=document.getElementById('emmcdumpblocks');
     const emmcDumpChunkEl=document.getElementById('emmcdumpchunk');
     const emmcDumpDblEl=document.getElementById('emmcdumpdbl');
@@ -606,6 +684,7 @@
     const emmcDumpDlBtn=document.getElementById('emmcdumpdlbtn');
     const emmcDumpDlGzBtn=document.getElementById('emmcdumpdlgzbtn');
     const emmcDumpFileMetaEl=document.getElementById('emmcdumpfilemeta');
+    const emmcDumpPlanEl=document.getElementById('emmcdumpplan');
     const emmcDumpStatEl=document.getElementById('emmcdumpstat');
     const emmcDumpRateEl=document.getElementById('emmcdumprate');
     const emmcDumpErrEl=document.getElementById('emmcdumperr');
@@ -613,13 +692,19 @@
     const emmcScanStartEl=document.getElementById('emmcscanstart');
     const emmcScanSkipEl=document.getElementById('emmcscanskip');
     const emmcScanTotalEl=document.getElementById('emmcscantotal');
+    const emmcScanMinSpanEl=document.getElementById('emmcscanminspan');
     const emmcScanStartBtn=document.getElementById('emmcscanstartbtn');
     const emmcScanStopBtn=document.getElementById('emmcscanstopbtn');
+    const emmcScanClearBtn=document.getElementById('emmcscanclearbtn');
+    const emmcScanPlanEl=document.getElementById('emmcscanplan');
     const emmcScanStatEl=document.getElementById('emmcscanstat');
+    const emmcScanRowsEl=document.getElementById('emmcscanrows');
+    const emmcScanEmptyEl=document.getElementById('emmcscanempty');
     const emmcFindStartEl=document.getElementById('emmcfindstart');
     const emmcFindMaxEl=document.getElementById('emmcfindmax');
     const emmcFindStartBtn=document.getElementById('emmcfindstartbtn');
     const emmcFindStopBtn=document.getElementById('emmcfindstopbtn');
+    const emmcFindPlanEl=document.getElementById('emmcfindplan');
     const emmcFindStatEl=document.getElementById('emmcfindstat');
     const emmcTriState=document.getElementById('emmctristate');
     const emmcPullups=document.getElementById('emmcpullups');
@@ -801,7 +886,6 @@
     let emmcDumpUiTimer=null;
     let emmcDumpStartLba=0;
     let emmcDumpCurrentLba=0;
-    let emmcDumpStartStamp='';
     let emmcDumpStartMs=0;
     let emmcDumpLastRateMs=0;
     let emmcDumpLastRateBytes=0;
@@ -828,6 +912,10 @@
         connPill.textContent='CONNECTING';
         connPill.className='livepill live-off';
       }
+    }
+    function setRunActive(el,on){
+      if(!el)return;
+      el.classList.toggle('runactive',!!on);
     }
 
     function renderVerifyStatus(){
@@ -1156,6 +1244,62 @@
     }
     function dumpRowsLimit(){return Math.max(1,Math.min(64,parseInt(spiDumpRows.value,10)||16));}
     function emmcDumpRowsLimit(){return Math.max(1,Math.min(64,parseInt(emmcDumpRowsEl.value,10)||16));}
+    let emmcScanRowSeq=0;
+    let emmcScanRowsData=[];
+    function emmcScanMinSpanBlocks(){return Math.max(0,parseNum(emmcScanMinSpanEl?emmcScanMinSpanEl.value:0,0));}
+    function renderEmmcScanTable(){
+      emmcScanRowSeq=0;
+      if(!emmcScanRowsEl)return;
+      emmcScanRowsEl.innerHTML='';
+      const minSpan=emmcScanMinSpanBlocks();
+      for(const r of emmcScanRowsData){
+        const spanBlocks=Math.max(1,parseNum(r.span,1));
+        if(spanBlocks<minSpan)continue;
+        emmcScanRowSeq++;
+        const tr=document.createElement('tr');
+        const kind=String(r.kind||'').toLowerCase();
+        if(kind==='empty') tr.classList.add('scan-empty');
+        else if(kind==='non-empty') tr.classList.add('scan-nonempty');
+        const sizeBytes=spanBlocks*512;
+        const cells=[
+          String(emmcScanRowSeq),
+          String(r.kind||'--'),
+          fmtInt(parseNum(r.start,0)),
+          fmtInt(parseNum(r.end,parseNum(r.start,0))),
+          fmtInt(spanBlocks),
+          fmtInt(sizeBytes)
+        ];
+        for(const v of cells){
+          const td=document.createElement('td');
+          td.textContent=v;
+          tr.appendChild(td);
+        }
+        emmcScanRowsEl.appendChild(tr);
+      }
+      if(!emmcScanRowsEl.children.length){
+        const tr=document.createElement('tr');
+        tr.id='emmcscanempty';
+        const td=document.createElement('td');
+        td.colSpan=6;
+        td.className='dim';
+        td.textContent=(minSpan>0)?('No rows match Min Span >= '+fmtInt(minSpan)+' blocks'):'No results yet';
+        tr.appendChild(td);
+        emmcScanRowsEl.appendChild(tr);
+      }
+    }
+    function clearEmmcScanTable(){
+      emmcScanRowsData=[];
+      renderEmmcScanTable();
+    }
+    function appendEmmcScanRow(kind,startLba,endLba,span){
+      emmcScanRowsData.push({
+        kind:String(kind||'--'),
+        start:parseNum(startLba,0),
+        end:parseNum(endLba,parseNum(startLba,0)),
+        span:Math.max(1,parseNum(span,1))
+      });
+      renderEmmcScanTable();
+    }
     function renderDumpRecent(){
       if(!dumpRecent.length){spiLastHex.textContent='last dump bytes will appear here';return;}
       const cols=16;
@@ -1262,10 +1406,60 @@
       emmcDumpErrEl.textContent='Errors: '+errRaw+'/'+aRaw+' ('+pct+'%) | CRC '+crcRaw+' | no-R1 '+noR1Raw+' | resync '+resyncRaw+' | tx-busy '+txBusyRaw+
         ' | Blocks: Normal '+blockNormalRaw+' | All-00 '+blockAll00Raw+' | All-FF '+blockAllFFRaw;
     }
+    function parseLbaInput(txt,def){
+      let t=String(txt==null?'':txt).trim().toLowerCase();
+      if(!t)return def>>>0;
+      return (t.startsWith('0x')?parseHexU32(t,def>>>0):Math.max(0,parseNum(t,def>>>0)))>>>0;
+    }
+    function emmcDumpPlannedStartLba(){
+      return parseLbaInput(emmcDumpStartEl.value,0);
+    }
+    function emmcDumpPlannedBlocks(){
+      return Math.max(1,parseNum(emmcDumpBlocksEl.value,16));
+    }
+    function emmcDumpNamePrefix(){
+      const p=String((emmcDumpPrefixEl&&emmcDumpPrefixEl.value)||'');
+      return p.length?p:'emmc_dump_';
+    }
+    function emmcDumpNameParts(){
+      const start=emmcDumpPlannedStartLba();
+      const blocks=emmcDumpPlannedBlocks();
+      const end=(start+Math.max(0,blocks-1))>>>0;
+      return {start,end,blocks,prefix:emmcDumpNamePrefix()};
+    }
+    function emmcDumpFileName(ext){
+      const n=emmcDumpNameParts();
+      return n.prefix+n.start+'_'+n.end+(ext||'.bin');
+    }
+    function emmcMul512(n){
+      return Math.max(0,Math.floor(Number(n)||0))*512;
+    }
+    function updateEmmcScanPlan(){
+      const start=parseLbaInput(emmcScanStartEl.value,0)>>>0;
+      const skip=Math.max(0,parseNum(emmcScanSkipEl.value,0));
+      const samples=Math.max(1,parseNum(emmcScanTotalEl.value,1));
+      const step=skip+1;
+      const end=(start+Math.max(0,samples-1)*step)>>>0;
+      const readBytes=emmcMul512(samples);
+      const spanBytes=emmcMul512(Math.max(0,(end-start)+1));
+      emmcScanPlanEl.textContent='Plan: End LBA '+fmtInt(end)+' | Data read '+fmtInt(readBytes)+' bytes | Covered span '+fmtInt(spanBytes)+' bytes';
+    }
+    function updateEmmcDumpPlan(){
+      const n=emmcDumpNameParts();
+      const bytes=emmcMul512(n.blocks);
+      emmcDumpPlanEl.textContent='Plan: LBA '+fmtInt(n.start)+' .. '+fmtInt(n.end)+' | Total binary size '+fmtInt(bytes)+' bytes';
+    }
+    function updateEmmcFindPlan(){
+      const start=parseLbaInput(emmcFindStartEl.value,0)>>>0;
+      const maxBlocks=Math.max(1,parseNum(emmcFindMaxEl.value,1));
+      const end=(start+Math.max(0,maxBlocks-1))>>>0;
+      const bytes=emmcMul512(maxBlocks);
+      emmcFindPlanEl.textContent='Plan: LBA '+fmtInt(start)+' .. '+fmtInt(end)+' | Max read size '+fmtInt(bytes)+' bytes';
+    }
     function updateEmmcDumpFileMeta(){
       const size=Math.max(0,emmcDumpMaxEnd);
-      const st=emmcDumpStartStamp||'--';
-      emmcDumpFileMetaEl.textContent='emmc_dump_'+st+'.bin ('+fmtInt(size)+' bytes)';
+      emmcDumpFileMetaEl.textContent=emmcDumpFileName('.bin')+' ('+fmtInt(size)+' bytes)';
+      updateEmmcDumpPlan();
     }
     function dumpAppendBytes(arr){
       if(!arr||!arr.length)return;
@@ -1488,6 +1682,7 @@
           setChangedText(emmcDumpHintEl,hint);
           emmcDumpStartEl.value='0';
           emmcDumpBlocksEl.value=String(secCount);
+          updateEmmcDumpFileMeta();
           emmcSt.textContent='layout loaded';
           emmcSt.className='ok';
         }else{
@@ -1538,6 +1733,7 @@
         }
         if(st==='running')emmcDumpActive=true;
         if(st==='complete'||st==='stopped'||st==='error')emmcDumpActive=false;
+        setRunActive(emmcDumpStatEl,st==='running');
         emmcLog('[emmc.dump.status] '+JSON.stringify(m),st==='error'?'err':'dim');
         return true;
       }
@@ -1560,14 +1756,17 @@
         emmcScanStatEl.textContent='scan: '+st+' | sampled '+fmtInt(done)+' / '+fmtInt(total)+
           ' | current LBA '+fmtInt(cur)+' | non-empty '+fmtInt(nonempty)+' | ranges '+fmtInt(ranges)+
           (detail?(' | '+detail):'');
+        setRunActive(emmcScanStatEl,st==='running');
         emmcLog('[emmc.scan.status] '+JSON.stringify(m),st==='error'?'err':'dim');
         return true;
       }
       if(m.type==='emmc.scan.range'){
+        const rangeType=String(m.range_type||'unknown');
         const start=parseNum(m.start_lba,0);
         const end=parseNum(m.end_lba,start);
         const span=parseNum(m.span_blocks,Math.max(1,end-start+1));
-        emmcLog('[emmc.scan.range] non-empty LBA '+start+' .. '+end+' (span '+span+' blocks)','ok');
+        appendEmmcScanRow(rangeType,start,end,span);
+        emmcLog('[emmc.scan.range] '+rangeType+' LBA '+start+' .. '+end+' (span '+span+' blocks)','ok');
         return true;
       }
       if(m.type==='emmc.scan.result'){
@@ -1578,6 +1777,7 @@
         const ranges=parseNum(m.ranges_found,0);
         emmcScanStatEl.textContent='scan: '+(ok?'complete':'error')+' | sampled '+fmtInt(done)+' / '+fmtInt(total)+
           ' | ranges '+fmtInt(ranges)+(msg?(' | '+msg):'');
+        setRunActive(emmcScanStatEl,false);
         emmcLog('[emmc.scan] '+JSON.stringify(m),ok?'ok':'err');
         return true;
       }
@@ -1589,6 +1789,7 @@
         const cur=parseNum(m.current_lba,0);
         emmcFindStatEl.textContent='find-start: '+st+' | scanned '+fmtInt(done)+' / '+fmtInt(total)+
           ' | current LBA '+fmtInt(cur)+(detail?(' | '+detail):'');
+        setRunActive(emmcFindStatEl,st==='running');
         emmcLog('[emmc.find_start.status] '+JSON.stringify(m),st==='error'?'err':'dim');
         return true;
       }
@@ -1599,6 +1800,7 @@
         const msg=String(m.msg||'');
         if(found) emmcFindStatEl.textContent='find-start: found at LBA '+fmtInt(foundLba)+(msg?(' | '+msg):'');
         else emmcFindStatEl.textContent='find-start: '+(ok?'not found':'error')+(msg?(' | '+msg):'');
+        setRunActive(emmcFindStatEl,false);
         emmcLog('[emmc.find_start] '+JSON.stringify(m),(ok&&found)?'ok':(ok?'dim':'err'));
         return true;
       }
@@ -1788,6 +1990,7 @@
         const detail=(m.detail||'');
         spiSt.textContent=stt;spiSt.className='ok';spiLog('[spi.dump.status] '+JSON.stringify(m));
         spiDump.textContent='dump: '+stt+(detail?(' ('+detail+')'):'');
+        setRunActive(spiDump,stt==='running');
         if(stt==='running'){dumpSessionActive=true;dumpDownloaded=false;}
         if(stt==='complete'&&dumpSessionActive){if(dumpStoreRaw)dumpDownload(false);dumpSessionActive=false;displayMode=false;displayStopSent=false;spiDumpRate.textContent='Rate: complete';}
         if(stt==='stopped'&&dumpSessionActive){
@@ -1809,7 +2012,7 @@
     function appendTextLog(s){if(!s)return;textLog+=s;const lim=termLimit();if(textLog.length>lim)textLog=textLog.slice(-lim);}
     function pushRawLog(bytes){if(!bytes||!bytes.length)return;const c=new Uint8Array(bytes.length);c.set(bytes);rawLogChunks.push(c);rawLogBytes+=c.length;const lim=rawLimit();while(rawLogBytes>lim&&rawLogChunks.length){rawLogBytes-=rawLogChunks[0].length;rawLogChunks.shift();}}
     function saveBlob(name,type,parts){const b=new Blob(parts,{type:type});const a=document.createElement('a');a.href=URL.createObjectURL(b);a.download=name;document.body.appendChild(a);a.click();setTimeout(()=>{URL.revokeObjectURL(a.href);a.remove();},0);}
-    async function gzipBytes(bytes){
+    async function gzipBytesWriteClose(bytes){
       if(!(bytes&&bytes.length))return new Uint8Array([]);
       if(typeof CompressionStream==='undefined')return null;
       const cs=new CompressionStream('gzip');
@@ -1818,6 +2021,45 @@
       await w.close();
       const ab=await new Response(cs.readable).arrayBuffer();
       return new Uint8Array(ab);
+    }
+    async function gzipBytesBlobPipe(bytes){
+      if(!(bytes&&bytes.length))return new Uint8Array([]);
+      if(typeof CompressionStream==='undefined')return null;
+      const cs=new CompressionStream('gzip');
+      const inStream=new Blob([bytes]).stream();
+      const outStream=inStream.pipeThrough(cs);
+      const ab=await new Response(outStream).arrayBuffer();
+      return new Uint8Array(ab);
+    }
+    async function gzipBytes(bytes){
+      if(!(bytes&&bytes.length))return new Uint8Array([]);
+      if(typeof CompressionStream==='undefined')return null;
+      try{
+        return await withTimeout(gzipBytesWriteClose(bytes),8000,'gzip/write-close');
+      }catch(_){
+        return await withTimeout(gzipBytesBlobPipe(bytes),8000,'gzip/blob-pipe');
+      }
+    }
+    function withTimeout(promise,ms,label){
+      return new Promise((resolve,reject)=>{
+        let done=false;
+        const t=setTimeout(()=>{
+          if(done)return;
+          done=true;
+          reject(new Error((label||'operation')+' timeout after '+ms+' ms'));
+        },Math.max(1,ms|0));
+        Promise.resolve(promise).then(v=>{
+          if(done)return;
+          done=true;
+          clearTimeout(t);
+          resolve(v);
+        }).catch(err=>{
+          if(done)return;
+          done=true;
+          clearTimeout(t);
+          reject(err);
+        });
+      });
     }
     function stamp(){const d=new Date();const p=n=>String(n).padStart(2,'0');return d.getFullYear()+p(d.getMonth()+1)+p(d.getDate())+'_'+p(d.getHours())+p(d.getMinutes())+p(d.getSeconds());}
     function xtermScrollback(){return Math.max(256,Math.min(50000,Math.floor(termLimit()/120)));}
@@ -1944,7 +2186,6 @@
       emmcDumpExpectedBytes=blocks*512;
       emmcDumpStartLba=start>>>0;
       emmcDumpCurrentLba=emmcDumpStartLba;
-      emmcDumpStartStamp=stamp();
       if(emmcDumpUiTimer!==null){clearTimeout(emmcDumpUiTimer);emmcDumpUiTimer=null;}
       emmcDumpStartMs=0;
       emmcDumpLastRateMs=0;
@@ -1952,6 +2193,7 @@
       emmcDumpRateEma=0;
       updateEmmcDumpFileMeta();
       updateEmmcDumpProgress();
+      setRunActive(emmcDumpStatEl,true);
       emmcSend('emmc.dump.start',{
         start_lba:start>>>0,
         block_count:blocks>>>0,
@@ -1965,34 +2207,43 @@
     emmcDumpStopBtn.onclick=()=>{
       emmcSend('emmc.dump.stop');
       emmcDumpActive=false;
+      setRunActive(emmcDumpStatEl,false);
       emmcDumpStatEl.textContent='Progress: '+fmtInt(emmcDumpBytes)+' / '+fmtInt(emmcDumpExpectedBytes)+' bytes (stopping...) | LBA: '+fmtInt(emmcDumpCurrentLba);
     };
     emmcDumpDlBtn.onclick=()=>{
       const asm=emmcAssembleDump();
       if(!asm){emmcLog('[emmc.dump] nothing captured yet','dim');return;}
-      const st=emmcDumpStartStamp||stamp();
-      saveBlob('emmc_dump_'+st+'.bin','application/octet-stream',[asm.bytes]);
+      saveBlob(emmcDumpFileName('.bin'),'application/octet-stream',[asm.bytes]);
       if(asm.missing>0) emmcLog('[emmc.dump] downloaded '+asm.total+' bytes with '+asm.missing+' missing bytes (filled as 00)','err');
       else emmcLog('[emmc.dump] downloaded '+asm.total+' bytes complete','ok');
     };
     emmcDumpDlGzBtn.onclick=async ()=>{
-      const asm=emmcAssembleDump();
-      if(!asm){emmcLog('[emmc.dump] nothing captured yet','dim');return;}
-      const st=emmcDumpStartStamp||stamp();
-      const gz=await gzipBytes(asm.bytes);
-      if(!gz){
-        emmcLog('[emmc.dump] gzip not supported by this browser','err');
-        return;
+      emmcLog('[emmc.dump] gzip requested','dim');
+      try{
+        emmcLog('[emmc.dump] assembling bytes...','dim');
+        const asm=emmcAssembleDump();
+        if(!asm){emmcLog('[emmc.dump] nothing captured yet','dim');return;}
+        emmcLog('[emmc.dump] compressing '+asm.total+' bytes...','dim');
+        const gz=await withTimeout(gzipBytes(asm.bytes),20000,'gzip');
+        if(!gz){
+          emmcLog('[emmc.dump] gzip not supported by this browser','err');
+          return;
+        }
+        emmcLog('[emmc.dump] compression complete, saving file...','dim');
+        saveBlob(emmcDumpFileName('.bin.gz'),'application/gzip',[gz]);
+        emmcLog('[emmc.dump] downloaded gzip '+asm.total+' -> '+gz.length+' bytes','ok');
+      }catch(err){
+        emmcLog('[emmc.dump] gzip failed: '+((err&&err.message)?err.message:String(err)),'err');
       }
-      saveBlob('emmc_dump_'+st+'.bin.gz','application/gzip',[gz]);
-      emmcLog('[emmc.dump] downloaded gzip '+asm.total+' -> '+gz.length+' bytes','ok');
     };
     emmcScanStartBtn.onclick=()=>{
       let startTxt=String(emmcScanStartEl.value||'').trim().toLowerCase();
       const start=startTxt.startsWith('0x')?parseHexU32(startTxt,0):Math.max(0,parseNum(startTxt,0));
       const skip=Math.max(0,parseNum(emmcScanSkipEl.value,255));
       const total=Math.max(1,parseNum(emmcScanTotalEl.value,4096));
+      clearEmmcScanTable();
       emmcScanStatEl.textContent='scan: starting...';
+      setRunActive(emmcScanStatEl,true);
       emmcSend('emmc.scan.start',{
         start_lba:start>>>0,
         skip_blocks:skip>>>0,
@@ -2003,13 +2254,16 @@
     };
     emmcScanStopBtn.onclick=()=>{
       emmcScanStatEl.textContent='scan: stopping...';
+      setRunActive(emmcScanStatEl,false);
       emmcSend('emmc.scan.stop');
     };
     emmcFindStartBtn.onclick=()=>{
       let startTxt=String(emmcFindStartEl.value||'').trim().toLowerCase();
       const start=startTxt.startsWith('0x')?parseHexU32(startTxt,0):Math.max(0,parseNum(startTxt,0));
       const maxBlocks=Math.max(1,parseNum(emmcFindMaxEl.value,4096));
+      clearEmmcScanTable();
       emmcFindStatEl.textContent='find-start: starting...';
+      setRunActive(emmcFindStatEl,true);
       emmcSend('emmc.find_start.start',{
         start_lba:start>>>0,
         max_blocks:maxBlocks>>>0,
@@ -2019,12 +2273,33 @@
     };
     emmcFindStopBtn.onclick=()=>{
       emmcFindStatEl.textContent='find-start: stopping...';
+      setRunActive(emmcFindStatEl,false);
       emmcSend('emmc.find_start.stop');
     };
+    emmcScanClearBtn.onclick=()=>clearEmmcScanTable();
     sfdpReadBtn.onclick=()=>{spiSend('spi.sfdp.read',{length:parseNum(sfdpLen.value,256)});};
     spiStatusReadBtn.onclick=()=>{spiSend('spi.status.read');};
     spiDumpRows.addEventListener('input',renderDumpRecent);
     emmcDumpRowsEl.addEventListener('input',()=>{renderEmmcDumpRecent();layoutEmmcLog();});
+    [emmcDumpPrefixEl,emmcDumpStartEl,emmcDumpBlocksEl].forEach(el=>{
+      if(!el)return;
+      el.addEventListener('input',updateEmmcDumpFileMeta);
+      el.addEventListener('change',updateEmmcDumpFileMeta);
+    });
+    [emmcScanStartEl,emmcScanSkipEl,emmcScanTotalEl].forEach(el=>{
+      if(!el)return;
+      el.addEventListener('input',updateEmmcScanPlan);
+      el.addEventListener('change',updateEmmcScanPlan);
+    });
+    if(emmcScanMinSpanEl){
+      emmcScanMinSpanEl.addEventListener('input',renderEmmcScanTable);
+      emmcScanMinSpanEl.addEventListener('change',renderEmmcScanTable);
+    }
+    [emmcFindStartEl,emmcFindMaxEl].forEach(el=>{
+      if(!el)return;
+      el.addEventListener('input',updateEmmcFindPlan);
+      el.addEventListener('change',updateEmmcFindPlan);
+    });
     spiDumpDbl.addEventListener('change',renderVerifyStatus);
     spiDumpRetry.addEventListener('input',()=>{verifyMaxRetriesCfg=parseNum(spiDumpRetry.value,0);renderVerifyStatus();});
     spiDumpRetry.addEventListener('change',()=>{verifyMaxRetriesCfg=parseNum(spiDumpRetry.value,0);renderVerifyStatus();});
@@ -2040,6 +2315,7 @@
       if(dumpUiTimer){clearTimeout(dumpUiTimer);dumpUiTimer=null;}
       spiSt.textContent='starting '+(toFile?'dump':'display')+'...';spiSt.className='dim';
       spiDump.textContent=(toFile?'dump':'display')+': starting...';
+      setRunActive(spiDump,true);
       spiDumpRate.textContent='Rate: measuring...';
       renderDumpRecent();updateDumpProgress();
       const addrBytes=(parseNum(spiDumpAddr.value,3)>=4)?4:3;
@@ -2050,6 +2326,7 @@
       const span=maxBytes-startAddr;
       if(dumpExpectedBytes>span){
         dumpSessionActive=false;
+        setRunActive(spiDump,false);
         const modeTxt=toFile?'dump':'display';
         const msg=modeTxt+' length/address exceeds '+addrBytes+'-byte address range';
         spiSt.textContent='range error';spiSt.className='err';
@@ -2060,9 +2337,17 @@
       spiSend(toFile?'spi.dump.start':'spi.display.start',{read_cmd:readCmd,addr_bytes:addrBytes,start_addr:startAddr,length_bytes:dumpExpectedBytes,chunk_bytes:parseNum(spiDumpChunk.value,256),double_read:spiDumpDbl.checked,verify_retries:parseNum(spiDumpRetry.value,0),ff_opt:spiDumpFf.checked,speed_hz:parseNum(spiSpeed.value,1000000)});
     }
     spiDispStartBtn.onclick=()=>startRead(false);
-    spiDispStopBtn.onclick=()=>{spiSt.textContent='stopping display...';spiSt.className='dim';spiDump.textContent='display: stopping...';spiSend('spi.display.stop');};
+    spiDispStopBtn.onclick=()=>{spiSt.textContent='stopping display...';spiSt.className='dim';spiDump.textContent='display: stopping...';setRunActive(spiDump,false);spiSend('spi.display.stop');};
     spiDumpStartBtn.onclick=()=>startRead(true);
-    spiDumpStopBtn.onclick=()=>{spiSt.textContent='stopping dump...';spiSt.className='dim';spiDump.textContent='dump: stopping...';spiSend('spi.dump.stop');};
+    spiDumpStopBtn.onclick=()=>{spiSt.textContent='stopping dump...';spiSt.className='dim';spiDump.textContent='dump: stopping...';setRunActive(spiDump,false);spiSend('spi.dump.stop');};
+    document.addEventListener('click',(e)=>{
+      const b=e.target&&e.target.closest?e.target.closest('button'):null;
+      if(!b)return;
+      b.classList.remove('btn-clicked');
+      void b.offsetWidth;
+      b.classList.add('btn-clicked');
+      setTimeout(()=>b.classList.remove('btn-clicked'),260);
+    });
     setInterval(()=>{
       if(!idPollActive||!idPollLastUpdateMs)return;
       const s=Math.max(0,Math.floor((Date.now()-idPollLastUpdateMs)/1000));
@@ -2078,8 +2363,11 @@
     buildRawRows();
     resetPinUi();
     resetEmmcPinUi();
+    clearEmmcScanTable();
     renderEmmcDumpRecent();
     updateEmmcDumpFileMeta();
+    updateEmmcScanPlan();
+    updateEmmcFindPlan();
     resetSnifferUi();
     updateReadRanges();
     resetVerifyStatus();

@@ -117,8 +117,10 @@ typedef struct {
   uint32_t scan_nonempty_blocks;
   uint32_t scan_ranges_found;
   bool scan_in_range;
+  bool scan_range_is_empty;
   uint32_t scan_range_start_lba;
   uint32_t scan_last_nonempty_lba;
+  uint32_t scan_range_last_lba;
   uint32_t scan_last_status_ms;
   bool find_active;
   uint32_t find_start_lba;
@@ -175,8 +177,10 @@ static emmc_state_t g_emmc = {
     .scan_nonempty_blocks = 0u,
     .scan_ranges_found = 0u,
     .scan_in_range = false,
+    .scan_range_is_empty = true,
     .scan_range_start_lba = 0u,
     .scan_last_nonempty_lba = 0u,
+    .scan_range_last_lba = 0u,
     .scan_last_status_ms = 0u,
     .find_active = false,
     .find_start_lba = 0u,
@@ -779,10 +783,11 @@ static bool send_scan_status(const char *state, const char *detail, uint32_t cur
   return app_send_text(out);
 }
 
-static bool send_scan_range(uint32_t start_lba, uint32_t end_lba, uint32_t span_blocks) {
+static bool send_scan_range(const char *range_type, uint32_t start_lba, uint32_t end_lba, uint32_t span_blocks) {
   char out[256];
   snprintf(out, sizeof(out),
-           "{\"type\":\"emmc.scan.range\",\"start_lba\":%lu,\"end_lba\":%lu,\"span_blocks\":%lu}",
+           "{\"type\":\"emmc.scan.range\",\"range_type\":\"%s\",\"start_lba\":%lu,\"end_lba\":%lu,\"span_blocks\":%lu}",
+           range_type ? range_type : "unknown",
            (unsigned long)start_lba, (unsigned long)end_lba, (unsigned long)span_blocks);
   return app_send_text(out);
 }
@@ -1760,8 +1765,10 @@ bool proto_emmc_handle_text(const char *type, const char *json) {
     g_emmc.scan_nonempty_blocks = 0u;
     g_emmc.scan_ranges_found = 0u;
     g_emmc.scan_in_range = false;
+    g_emmc.scan_range_is_empty = true;
     g_emmc.scan_range_start_lba = 0u;
     g_emmc.scan_last_nonempty_lba = 0u;
+    g_emmc.scan_range_last_lba = 0u;
     g_emmc.scan_last_status_ms = now_ms();
     if (!emmc_prepare_card_for_data(&rca, &hc, msg, sizeof(msg))) {
       g_emmc.scan_active = false;
@@ -2036,6 +2043,8 @@ void proto_emmc_poll(void) {
     uint32_t lba = 0u;
     bool all00 = false;
     bool allff = false;
+    bool is_empty;
+    const char *range_type;
 
     if ((now - g_emmc.scan_last_status_ms) >= EMMC_SCAN_HEARTBEAT_MS) {
       uint32_t hb_lba = g_emmc.scan_start_lba;
@@ -2046,8 +2055,9 @@ void proto_emmc_poll(void) {
 
     if (g_emmc.scan_done_blocks >= g_emmc.scan_total_blocks) {
       if (g_emmc.scan_in_range) {
-        uint32_t span = (g_emmc.scan_last_nonempty_lba - g_emmc.scan_range_start_lba) + 1u;
-        (void)send_scan_range(g_emmc.scan_range_start_lba, g_emmc.scan_last_nonempty_lba, span);
+        uint32_t span = (g_emmc.scan_range_last_lba - g_emmc.scan_range_start_lba) + 1u;
+        range_type = g_emmc.scan_range_is_empty ? "empty" : "non-empty";
+        (void)send_scan_range(range_type, g_emmc.scan_range_start_lba, g_emmc.scan_range_last_lba, span);
         g_emmc.scan_ranges_found++;
         g_emmc.scan_in_range = false;
       }
@@ -2083,18 +2093,27 @@ void proto_emmc_poll(void) {
       return;
     }
 
-    if (!all00 && !allff) {
+    is_empty = (all00 || allff);
+    if (!is_empty) {
       g_emmc.scan_nonempty_blocks++;
-      if (!g_emmc.scan_in_range) {
-        g_emmc.scan_in_range = true;
-        g_emmc.scan_range_start_lba = lba;
-      }
       g_emmc.scan_last_nonempty_lba = lba;
-    } else if (g_emmc.scan_in_range) {
-      uint32_t span = (g_emmc.scan_last_nonempty_lba - g_emmc.scan_range_start_lba) + 1u;
-      (void)send_scan_range(g_emmc.scan_range_start_lba, g_emmc.scan_last_nonempty_lba, span);
+    }
+
+    if (!g_emmc.scan_in_range) {
+      g_emmc.scan_in_range = true;
+      g_emmc.scan_range_is_empty = is_empty;
+      g_emmc.scan_range_start_lba = lba;
+      g_emmc.scan_range_last_lba = lba;
+    } else if (g_emmc.scan_range_is_empty == is_empty) {
+      g_emmc.scan_range_last_lba = lba;
+    } else {
+      uint32_t span = (g_emmc.scan_range_last_lba - g_emmc.scan_range_start_lba) + 1u;
+      range_type = g_emmc.scan_range_is_empty ? "empty" : "non-empty";
+      (void)send_scan_range(range_type, g_emmc.scan_range_start_lba, g_emmc.scan_range_last_lba, span);
       g_emmc.scan_ranges_found++;
-      g_emmc.scan_in_range = false;
+      g_emmc.scan_range_is_empty = is_empty;
+      g_emmc.scan_range_start_lba = lba;
+      g_emmc.scan_range_last_lba = lba;
     }
 
     g_emmc.scan_done_blocks++;
