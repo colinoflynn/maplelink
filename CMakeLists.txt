@@ -70,6 +70,7 @@ endif()
 
 set(BROWSERIO_GEN_DIR ${CMAKE_CURRENT_BINARY_DIR}/generated)
 set(BROWSERIO_INDEX_HDR ${BROWSERIO_GEN_DIR}/index_html_data.h)
+set(BROWSERIO_BUILDINFO_HDR ${BROWSERIO_GEN_DIR}/build_info.h)
 
 add_custom_command(
   OUTPUT ${BROWSERIO_INDEX_HDR}
@@ -88,6 +89,15 @@ add_custom_command(
 
 add_custom_target(generate_web_assets DEPENDS ${BROWSERIO_INDEX_HDR})
 add_dependencies(picowebserverspi generate_web_assets)
+
+add_custom_target(generate_build_info ALL
+  COMMAND ${CMAKE_COMMAND} -E make_directory ${BROWSERIO_GEN_DIR}
+  COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_LIST_DIR}/tools/gen_build_info.py
+          --output ${BROWSERIO_BUILDINFO_HDR}
+  BYPRODUCTS ${BROWSERIO_BUILDINFO_HDR}
+  VERBATIM
+)
+add_dependencies(picowebserverspi generate_build_info)
 
 if(BROWSERIO_XTERM_SOURCE STREQUAL "LOCAL")
   target_compile_definitions(picowebserverspi PUBLIC

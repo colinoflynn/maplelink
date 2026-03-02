@@ -6,6 +6,7 @@
 #include <string.h>
 
 #include "app_transport.h"
+#include "build_info.h"
 #include "pico/bootrom.h"
 #include "pico/stdlib.h"
 #include "proto_i2c.h"
@@ -124,7 +125,7 @@ static void send_hello(void) {
   snprintf(out, sizeof(out),
            "{\"type\":\"hello\",\"fw\":\"0.2.0\",\"build_date\":\"%s\",\"build_time\":\"%s\","
            "\"caps\":[\"uart0\",\"spi0\",\"i2c0\",\"emmc0\",\"bootsel\",\"debug\"]}",
-           __DATE__, __TIME__);
+           BROWSERIO_BUILD_DATE, BROWSERIO_BUILD_TIME);
   (void)app_send_text(out);
 }
 
