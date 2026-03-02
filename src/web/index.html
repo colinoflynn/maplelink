@@ -20,6 +20,20 @@
       --term-hex-bg:#1a0d2b;
       --term-shadow:0 0 3px rgba(244,114,182,.22);
     }
+    body.ui-theme-msdos622 {
+      --bg:#0000aa;
+      --bg2:#0015b8;
+      --fg:#ffffff;
+      --dim:#8fd7ff;
+      --line:#00d7d7;
+      --ok:#ffff55;
+      --err:#ff5555;
+      --term-bg:#0000aa;
+      --term-fg:#ffffff;
+      --term-hex-fg:#ffff55;
+      --term-hex-bg:#0015b8;
+      --term-shadow:none;
+    }
     body { margin:0; background:var(--bg); color:var(--fg); font:14px/1.4 monospace; }
     .bar { padding:8px; border-bottom:1px solid #1f2937; background:var(--bg2); display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
     .tabs { position:sticky; top:0; z-index:5; }
@@ -179,6 +193,36 @@
     body.ui-theme-purplepink #debugPanel a { color:#f9a8d4; text-decoration-color:rgba(249,168,212,.75); }
     body.ui-theme-purplepink #debugPanel a:hover,
     body.ui-theme-purplepink #debugPanel a:focus { color:#fbcfe8; text-decoration-color:rgba(251,207,232,.98); }
+    body.ui-theme-msdos622 .bar { border-bottom-color:#00d7d7; background:var(--bg2); }
+    body.ui-theme-msdos622 .group { border-bottom-color:#00d7d7; background:#0000aa; }
+    body.ui-theme-msdos622 .gtitle { color:#00ffff; }
+    body.ui-theme-msdos622 input,
+    body.ui-theme-msdos622 select,
+    body.ui-theme-msdos622 button { background:#00aaaa; border-color:#00ffff; color:#000000; }
+    body.ui-theme-msdos622 button:hover { border-color:#ffff55; background:#00c7c7; color:#000000; }
+    body.ui-theme-msdos622 button:active { border-color:#ffff55; background:#11d3d3; color:#000000; box-shadow:0 0 0 1px rgba(255,255,85,.35) inset; }
+    body.ui-theme-msdos622 button:focus-visible { box-shadow:0 0 0 2px rgba(255,255,85,.70); }
+    body.ui-theme-msdos622 .tabbtn.active { border-color:#ffff55; box-shadow:0 0 0 1px #ffff55 inset; }
+    body.ui-theme-msdos622 .pane { border-right-color:#00d7d7; }
+    body.ui-theme-msdos622 #spiout,
+    body.ui-theme-msdos622 #emmcout,
+    body.ui-theme-msdos622 #rawout,
+    body.ui-theme-msdos622 #dbgout,
+    body.ui-theme-msdos622 #sniffview,
+    body.ui-theme-msdos622 #spilasthex,
+    body.ui-theme-msdos622 #emmcdumplast { border-color:#00d7d7; background:#00008b; color:#ffffff; }
+    body.ui-theme-msdos622 .chip,
+    body.ui-theme-msdos622 .idbox,
+    body.ui-theme-msdos622 .dbar { border-color:#00d7d7; background:#00008b; }
+    body.ui-theme-msdos622 .wmap th,
+    body.ui-theme-msdos622 .wmap td { border-color:#00d7d7; }
+    body.ui-theme-msdos622 .wmap th { background:#00008b; color:#00ffff; }
+    body.ui-theme-msdos622 .idlbl { color:#00ffff; }
+    body.ui-theme-msdos622 .idval { color:#ffffff; }
+    body.ui-theme-msdos622 .dim { color:#8fd7ff; }
+    body.ui-theme-msdos622 #debugPanel a { color:#ffff55; text-decoration-color:rgba(255,255,85,.75); }
+    body.ui-theme-msdos622 #debugPanel a:hover,
+    body.ui-theme-msdos622 #debugPanel a:focus { color:#ffff9f; text-decoration-color:rgba(255,255,159,.98); }
   </style>
 </head>
 <body>
@@ -208,6 +252,7 @@
       <option value="default" selected>default</option>
       <option value="matrix">matrix</option>
       <option value="canada">canada</option>
+      <option value="coolranch">cool ranch</option>
       <option value="rainbow">rainbow</option>
       <option value="pink">pink</option>
       <option value="hotpink">hot pink</option>
@@ -624,6 +669,7 @@
         <label>Theme <select id="uitheme">
           <option value="default" selected>default (blue dark)</option>
           <option value="purplepink">purple/pink</option>
+          <option value="msdos622">MS Dos 6.22</option>
         </select></label>
       </div>
     </div>
@@ -2239,6 +2285,7 @@
       const n=String(name||'default').toLowerCase();
       if(n==='matrix') return {termBg:'#040904',termFg:'#7dff78',hexFg:'#78f57a',hexBg:'#030a03',termShadow:'0 0 4px rgba(125,255,120,.22)',xterm:{background:'#040904',foreground:'#7dff78',cursor:'#7dff78',selectionBackground:'rgba(125,255,120,.30)'}};
       if(n==='canada') return {termBg:'#140708',termFg:'#ff4d57',hexFg:'#fca5a5',hexBg:'#1a0a0c',termShadow:'0 0 3px rgba(255,77,87,.22)',xterm:{background:'#140708',foreground:'#ff4d57',cursor:'#ff4d57',selectionBackground:'rgba(255,77,87,.28)'}};
+      if(n==='coolranch') return {termBg:'#08235f',termFg:'#ffd69a',hexFg:'#ffe0b3',hexBg:'#061b4b',termShadow:'0 0 3px rgba(255,214,154,.20)',xterm:{background:'#08235f',foreground:'#ffd69a',cursor:'#ffd69a',selectionBackground:'rgba(255,214,154,.30)'}};
       if(n==='rainbow') return {termBg:'#12061f',termFg:'#ffd9ff',hexFg:'#ffe4a3',hexBg:'#160a24',termShadow:'0 0 3px rgba(255,77,166,.25)',xterm:{background:'#12061f',foreground:'#ffd9ff',cursor:'#22d3ee',selectionBackground:'rgba(236,72,153,.35)'}};
       if(n==='pink') return {termBg:'#130914',termFg:'#ffb7e8',hexFg:'#ff9ee2',hexBg:'#1a0b1a',termShadow:'none',xterm:{background:'#130914',foreground:'#ffb7e8',cursor:'#ff7bd5',selectionBackground:'rgba(255,123,213,.30)'}};
       if(n==='hotpink') return {termBg:'#170610',termFg:'#ff5ccf',hexFg:'#ff8fe0',hexBg:'#1d0815',termShadow:'0 0 4px rgba(255,92,207,.35)',xterm:{background:'#170610',foreground:'#ff5ccf',cursor:'#ff85dc',selectionBackground:'rgba(255,92,207,.38)'}};
@@ -2263,12 +2310,13 @@
     function applyUiTheme(){
       const name=String((uiThemeSel&&uiThemeSel.value)||'default').toLowerCase();
       document.body.classList.toggle('ui-theme-purplepink',name==='purplepink');
+      document.body.classList.toggle('ui-theme-msdos622',name==='msdos622');
       try{localStorage.setItem('ui_theme',name);}catch(_){}
     }
     function restoreUiTheme(){
       let name='default';
       try{name=String(localStorage.getItem('ui_theme')||'default').toLowerCase();}catch(_){}
-      if(name!=='purplepink')name='default';
+      if(name!=='purplepink'&&name!=='msdos622')name='default';
       if(uiThemeSel)uiThemeSel.value=name;
       applyUiTheme();
     }

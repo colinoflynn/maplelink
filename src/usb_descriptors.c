@@ -303,10 +303,10 @@ bool tud_vendor_control_xfer_cb(uint8_t rhport, uint8_t stage, tusb_control_requ
 static char const* string_desc_arr [] =
 {
   [STRID_LANGID]       = (const char[]) { 0x09, 0x04 }, // supported language is English (0x0409)
-  [STRID_MANUFACTURER] = "TinyUSB",                     // Manufacturer
-  [STRID_PRODUCT]      = "TinyUSB Device",              // Product
+  [STRID_MANUFACTURER] = "Colin",                     // Manufacturer
+  [STRID_PRODUCT]      = "MapleLink",              // Product
   [STRID_SERIAL]       = NULL,                          // Serials will use unique ID if possible
-  [STRID_INTERFACE]    = "TinyUSB Network Interface"    // Interface Description
+  [STRID_INTERFACE]    = "MapleLink Network Interface"    // Interface Description
 
   // STRID_MAC index is handled separately
 };

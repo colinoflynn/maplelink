@@ -21,15 +21,16 @@ hacking, requiring only a R-Pi Pico and some wires (and probably logic clips).
 * SPI Flash dumping features:
   * Supports 3 & 4-byte addressing, hopefully detects correctly which to use
   * Option to double-read each block to hopefully detect errors, aborts or retries if this happens with status
-  * Can display on screen or dump to binary file. Preview data as it's dumping. Partial dumps can be saved if you abort.
+  * Can display on screen or dump to binary file. Preview data as it's dumping. Partial dumps can be saved if you abort
   * Fast enough to not be infuriating for smaller flash sizes (see table below)
 * SPI RAW features:
   * Send arbitrary SPI commands to a device, including extra padding FF's
   * Lets you set 10 quick-access fields to transmit different commands (can change the number in html file)
 * eMMC Features:
-  * Mostly experimental implementation
   * Reads ID, sizes
-  * Infuriatingly slow dumping of user partition that m abort part-way through most likely
+  * Scan for empty/non-empty areas to try and avoid wasting time dumping large partitions
+  * Infuriatingly slow dumping of user partition that you don't want to use for the full 4Gb flash
+  * Extra-questionable code quality
 * Re-enable R-Pi bootloader for easy development without touching a button
 * Front-end and much of the firmware code written by AI, I have no idea what it does or how it works (as god intended)
 * Randomly disconnects or times out (some would call this a bug)
@@ -67,7 +68,7 @@ Some test on my computer for SPI:
    - `ansi colors`: interprets ANSI color escapes.
    - `vt100 (xterm.js)`: full terminal emulation (requires internet by default).
 5. Optional display controls:
-   - `Terminal Theme`: `default`, `matrix`, `rainbow`, `pink`, `hot pink`.
+   - `Terminal Theme`: `default`, `matrix`, `canada`, `cool ranch`, `rainbow`, `pink`, `hot pink`.
    - `hex view`: enables a hex view of incoming data
    - `Hex cols`: defines the hex width
    - `Hex gap ms`: After this many ms of no data, will make a new line in the hex view (to help with packets)
@@ -245,4 +246,3 @@ Use the CMake cache option:
 
 - `BROWSERIO_XTERM_SOURCE=CDN` (default): loads xterm from CDN URLs.
 - `BROWSERIO_XTERM_SOURCE=LOCAL`: expects local `/xterm.js` and `/xterm.css` assets via `xterm_asset_get`.
-
