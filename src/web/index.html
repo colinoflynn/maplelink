@@ -245,8 +245,16 @@
     <label>Data <select id="data"><option>8</option><option>7</option></select></label>
     <label>Parity <select id="parity"><option value="none">none</option><option value="even">even</option><option value="odd">odd</option></select></label>
     <label>Stop <select id="stop"><option value="1">1</option><option value="2">2</option></select></label>
+    <button id="apply">Apply</button>
+    <span id="dirty">settings changed - press Apply</span>
+    <span id="st">connecting...</span>
+  </div>
+  <div class="bar">
     <label>Enter <select id="enter"><option value="none">none</option><option value="cr">\r</option><option value="lf">\n</option><option value="crlf" selected>\r\n</option></select></label>
     <label>Send <select id="sendmode"><option value="type">as you type</option><option value="line">on Enter only</option></select></label>
+    <label><input id="localecho" type="checkbox">local echo</label>
+  </div>
+  <div class="bar">
     <label>Decode <select id="decode"><option value="plain">plain</option><option value="ansi">ansi colors</option><option value="vt100">vt100 (xterm.js)</option></select></label>
     <label>Terminal Theme <select id="termtheme">
       <option value="default" selected>default</option>
@@ -257,14 +265,11 @@
       <option value="pink">pink</option>
       <option value="hotpink">hot pink</option>
     </select></label>
+  </div>
+  <div class="bar">
     <label><input id="hexview" type="checkbox">hex view</label>
     <label>Hex cols <input id="hexcols" type="number" value="16" min="4" max="64" step="1"></label>
     <label>Hex gap ms <input id="hexgap" type="number" value="100" min="10" max="2000" step="10"></label>
-    <label>Backlog KB <input id="retainkb" type="number" value="256" min="32" max="2048" step="32"></label>
-    <label><input id="localecho" type="checkbox">local echo</label>
-    <button id="apply">Apply</button>
-    <span id="dirty">settings changed - press Apply</span>
-    <span id="st">connecting...</span>
   </div>
   <div class="bar">
     <span id="uartpins" class="dim">UART0 pins: TX=GPIO0, RX=GPIO1</span>
@@ -280,8 +285,11 @@
     <input id="tx" type="text" placeholder="Send byte sequence (e.g. 01 02 ff or 0x41,0x42)">
     <select id="histhex"><option value="">recent hex...</option></select>
     <button id="sendbytes">Send Bytes</button>
+  </div>
+  <div class="bar">
     <button id="dltext">Download Text Log</button>
-    <button id="dlraw">Download Raw Binary</button>
+    <button id="dlraw">Download Bin Log</button>
+    <label>Backlog KB <input id="retainkb" type="number" value="256" min="32" max="2048" step="32"></label>
     <label><input id="scrolllock" type="checkbox">Disable Autoscroll</label>
     <button id="clear">Clear Terminal Output</button>
     <span class="dim">Tip: click terminal pane to type</span>
@@ -318,10 +326,10 @@
         <div class="chip">
           <div class="ctitle">Top View (Pin 1 dot/notch side)</div>
           <pre>              .----.
-   /CS       1|o   |8  VCC (3V3)
+         /CS 1|o   |8  VCC (3V3)
    IO1 :  DO 2|    |7  /HOLD : IO3
    IO2 : /WP 3|    |6  SCK
-   GND       4|____|5  DI : IO0</pre>
+         GND 4|____|5  DI : IO0</pre>
         </div>
         <div>
           <table class="wmap">
@@ -431,9 +439,13 @@
         <label>Read 4-byte ADDR CMD <input id="spidumpcmd4" type="text" value="0x13" style="width:68px"></label>
         <label>Addr Bytes <select id="spidumpaddr"><option selected>3</option><option>4</option></select></label>
         <label>Chunk <input id="spidumpchunk" type="number" min="16" step="16" value="256"></label>
+      </div>
+      <div class="grow">
         <label>Double-read verify <input id="spidumpdbl" type="checkbox" checked></label>
         <label>Automatic Retries <input id="spidumpretry" type="number" min="0" max="20" step="1" value="10"></label>
         <label>FF run optimize <input id="spidumpff" type="checkbox" checked></label>
+      </div>
+      <div class="grow">
         <label>Starting address <input id="spistartaddr" type="text" value="0x00000000" style="width:112px"></label>
       </div>
       <div class="gtitle">Display</div>
