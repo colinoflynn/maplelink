@@ -44,6 +44,7 @@
 #define EMMC_RESELECT_EVERY_BLOCKS 16u
 #define EMMC_CMD17_R1_EXTRA_TRIES 3u
 #define EMMC_DUMP_MIN_SPEED_HZ 100000u
+#define EMMC_DUMP_INTER_BLOCK_IDLE_CLKS 8u
 #define EMMC_READ_BLOCK_WATCHDOG_MS 6000u
 #define EMMC_FULL_REPREPARE_MAX 2u
 #define WS_BIN_MAGIC 0xB0u
@@ -103,7 +104,7 @@ static emmc_state_t g_emmc = {
     .speed_hz = 400000,
     .idpoll_interval_ms = 500,
     .cmd_output = false,
-    .cmd_open_drain = true,
+    .cmd_open_drain = false,
     .dump_active = false,
     .dump_hc_addressing = false,
     .dump_rca = 1u,
@@ -271,8 +272,11 @@ static inline void emmc_cmd_set_input(void) {
 }
 
 static inline void emmc_clock_bit_out(uint8_t bit) {
-  gpio_put(EMMC_CLK_PIN, 0u);
+  // SD/eMMC samples command/data on CLK rising edge; update CMD during low phase
+  // (after falling edge) to maximize setup/hold margin on analyzers and targets.
+    //emmc_delay_half();
   emmc_cmd_set_output(bit ? true : false);
+  gpio_put(EMMC_CLK_PIN, 0u);
   emmc_delay_half();
   gpio_put(EMMC_CLK_PIN, 1u);
   emmc_delay_half();
@@ -280,21 +284,23 @@ static inline void emmc_clock_bit_out(uint8_t bit) {
 
 static inline uint8_t emmc_clock_bit_in_cmd(void) {
   uint8_t bit;
+  bit = (uint8_t)gpio_get(EMMC_CMD_PIN);
   gpio_put(EMMC_CLK_PIN, 0u);
   emmc_delay_half();
   gpio_put(EMMC_CLK_PIN, 1u);
-  bit = (uint8_t)gpio_get(EMMC_CMD_PIN);
   emmc_delay_half();
+  //bit = (uint8_t)gpio_get(EMMC_CMD_PIN);
   return bit;
 }
 
 static inline uint8_t emmc_clock_bit_in_dat0(void) {
   uint8_t bit;
+  bit = (uint8_t)gpio_get(EMMC_DAT0_PIN);
   gpio_put(EMMC_CLK_PIN, 0u);
   emmc_delay_half();
   gpio_put(EMMC_CLK_PIN, 1u);
-  bit = (uint8_t)gpio_get(EMMC_DAT0_PIN);
   emmc_delay_half();
+  //bit = (uint8_t)gpio_get(EMMC_DAT0_PIN);
   return bit;
 }
 
@@ -465,7 +471,7 @@ static bool emmc_try_read_ids(emmc_id_data_t *out) {
   uint32_t saved_speed = 0;
   if (!out) return false;
   memset(out, 0, sizeof(*out));
-  g_emmc.cmd_open_drain = true;
+  g_emmc.cmd_open_drain = false; //was true
 
 #define EMMC_RESTORE_TIMING() \
   do { \
@@ -499,6 +505,7 @@ static bool emmc_try_read_ids(emmc_id_data_t *out) {
         ocr = bitbuf_get_u32(r1, 8u, 32u);
         if ((ocr & 0x80000000u) != 0u) break;
       }
+      emmc_send_idle_clocks(8u);
       sleep_ms(EMMC_CMD1_RETRY_DELAY_MS);
     }
     if ((ocr & 0x80000000u) != 0u) break;
@@ -530,6 +537,7 @@ static bool emmc_try_read_ids(emmc_id_data_t *out) {
     return false;
   }
   r2_extract_payload_120(r2, out->cid);
+  emmc_send_idle_clocks(8u);
 
   for (cmdx_try = 0; cmdx_try < EMMC_CMDX_RETRIES; cmdx_try++) {
     if (emmc_send_cmd_raw(3u, ((uint32_t)rca) << 16u, 48u, r1, sizeof(r1))) break;
@@ -545,6 +553,7 @@ static bool emmc_try_read_ids(emmc_id_data_t *out) {
     EMMC_RESTORE_TIMING();
     return false;
   }
+  emmc_send_idle_clocks(8u);
 
   for (cmdx_try = 0; cmdx_try < EMMC_CMDX_RETRIES; cmdx_try++) {
     if (emmc_send_cmd_raw(9u, ((uint32_t)rca) << 16u, 136u, r2, sizeof(r2))) break;
@@ -671,6 +680,36 @@ static void send_cmd1_test_result(bool saw_response, bool ready, uint32_t respon
   (void)app_send_text(out);
 }
 
+static void emmc_dbg_cmd1_attempt(uint32_t attempt_idx, bool got_resp, const uint8_t r1[6]) {
+  char dbg[224];
+  if (!got_resp) {
+    snapshot_levels();
+    snprintf(dbg, sizeof(dbg),
+             "cmd1_test try %lu: no response (CMD=%u CLK=%u DAT0=%u)",
+             (unsigned long)(attempt_idx + 1u),
+             (unsigned)g_emmc.lv_cmd, (unsigned)g_emmc.lv_clk, (unsigned)g_emmc.lv_dat0);
+    emmc_dbg(2, dbg);
+    return;
+  }
+
+  if (r1) {
+    char r1_hex[20];
+    uint32_t cmdidx = bitbuf_get_u32(r1, 2u, 6u);
+    uint32_t ocr = bitbuf_get_u32(r1, 8u, 32u);
+    uint32_t crc = bitbuf_get_u32(r1, 40u, 7u);
+    uint32_t start = bitbuf_get(r1, 0u);
+    uint32_t tx = bitbuf_get(r1, 1u);
+    uint32_t end = bitbuf_get(r1, 47u);
+    hex_bytes(r1, 6u, r1_hex, sizeof(r1_hex));
+    snprintf(dbg, sizeof(dbg),
+             "cmd1_test try %lu: r1=%s start=%lu tx=%lu cmd=%lu ocr=%08lX crc7=%02lX end=%lu",
+             (unsigned long)(attempt_idx + 1u), r1_hex,
+             (unsigned long)start, (unsigned long)tx, (unsigned long)cmdidx,
+             (unsigned long)ocr, (unsigned long)crc, (unsigned long)end);
+    emmc_dbg(2, dbg);
+  }
+}
+
 static void send_sd_test_result(bool cmd8_ok, uint32_t cmd8_echo, uint32_t cmd8_r1,
                                 bool cmd55_ok, bool acmd41_ok, bool ready, uint32_t attempts,
                                 uint32_t acmd41_arg, uint32_t ocr) {
@@ -721,7 +760,7 @@ static void emmc_emit_cmd1_test(uint32_t retries, uint32_t arg) {
 
   if (retries == 0u) retries = 16u;
   if (retries > 200u) retries = 200u;
-  g_emmc.cmd_open_drain = true;
+  g_emmc.cmd_open_drain = false; // push-pull for this hardware path
 
   if (g_emmc.speed_hz > 200000u) {
     saved_speed = g_emmc.speed_hz;
@@ -740,6 +779,7 @@ static void emmc_emit_cmd1_test(uint32_t retries, uint32_t arg) {
 
   for (i = 0; i < retries; i++) {
     if (emmc_send_cmd_raw(1u, arg, 48u, r1, sizeof(r1))) {
+      if (app_debug_level() >= 2u) emmc_dbg_cmd1_attempt(i, true, r1);
       saw_response = true;
       responses++;
       ocr = bitbuf_get_u32(r1, 8u, 32u);
@@ -748,7 +788,11 @@ static void emmc_emit_cmd1_test(uint32_t retries, uint32_t arg) {
         i++;
         break;
       }
+    } else if (app_debug_level() >= 2u) {
+      emmc_dbg_cmd1_attempt(i, false, NULL);
     }
+    // Provide explicit Ncc clocks between repeated CMD1 attempts.
+    emmc_send_idle_clocks(8u);
     sleep_ms(EMMC_CMD1_RETRY_DELAY_MS);
   }
 
@@ -776,7 +820,7 @@ static void emmc_emit_sd_test(uint32_t retries, uint32_t acmd41_arg) {
 
   if (retries == 0u) retries = 24u;
   if (retries > 200u) retries = 200u;
-  g_emmc.cmd_open_drain = true;
+  g_emmc.cmd_open_drain = false; //was true;
 
   if (g_emmc.speed_hz > 200000u) {
     saved_speed = g_emmc.speed_hz;
@@ -809,6 +853,7 @@ static void emmc_emit_sd_test(uint32_t retries, uint32_t acmd41_arg) {
         break;
       }
     }
+    emmc_send_idle_clocks(8u);
     sleep_ms(EMMC_CMD1_RETRY_DELAY_MS);
   }
 
@@ -1056,8 +1101,17 @@ static bool emmc_read_ext_csd(uint8_t out[EMMC_DUMP_BLOCK_SIZE], char *msg, size
     }
 
     // Recovery path: re-select transfer state and retry.
-    (void)emmc_send_cmd_raw(7u, ((uint32_t)rca) << 16u, 48u, r1, sizeof(r1));
-    if (!hc) (void)emmc_send_cmd_raw(16u, EMMC_DUMP_BLOCK_SIZE, 48u, r1, sizeof(r1));
+    for (i = 0; i < EMMC_CMDX_RETRIES; i++) {
+      if (emmc_send_cmd_raw(7u, ((uint32_t)rca) << 16u, 48u, r1, sizeof(r1))) break;
+      emmc_send_idle_clocks(8u);
+    }
+    if (!hc) {
+      emmc_send_idle_clocks(8u);
+      for (i = 0; i < EMMC_CMDX_RETRIES; i++) {
+        if (emmc_send_cmd_raw(16u, EMMC_DUMP_BLOCK_SIZE, 48u, r1, sizeof(r1))) break;
+        emmc_send_idle_clocks(8u);
+      }
+    }
     emmc_send_idle_clocks(16u);
   }
   return false;
@@ -1147,6 +1201,7 @@ static bool emmc_prepare_card_for_data(uint16_t *out_rca, bool *out_hc, char *ms
       selected = true;
       break;
     }
+    emmc_send_idle_clocks(8u);
     // Reassert RCA, then try select again.
     (void)emmc_send_cmd_raw(3u, ((uint32_t)(*out_rca)) << 16u, 48u, r1, sizeof(r1));
     emmc_send_idle_clocks(16u);
@@ -1181,7 +1236,6 @@ static bool emmc_read_block(uint32_t lba, bool hc_addressing, uint8_t out[EMMC_D
   uint32_t cmd_no_r1_count = 0u;
   uint32_t orig_speed = g_emmc.speed_hz;
   bool speed_floor_forced = false;
-  bool speed_reduced = false;
   uint32_t full_reprepare_count = 0u;
   uint32_t block_start_ms = now_ms();
   bool cmd_ok;
@@ -1214,19 +1268,11 @@ static bool emmc_read_block(uint32_t lba, bool hc_addressing, uint8_t out[EMMC_D
     data_ok = false;
     if (cmd_ok) data_ok = emmc_read_data_block_512(out);
     if (cmd_ok && data_ok) {
-      if (speed_reduced || speed_floor_forced) {
+      if (speed_floor_forced) {
         g_emmc.speed_hz = orig_speed;
         emmc_update_timing();
       }
       return true;
-    }
-
-    // Adaptive PIO retry: if early data-phase failures occur at high speed, drop to 400 kHz.
-    if (g_emmc.dump_use_pio && cmd_ok && !data_ok && !speed_reduced && orig_speed > 400000u && attempt >= 1u) {
-      g_emmc.speed_hz = 400000u;
-      emmc_update_timing();
-      speed_reduced = true;
-      if (app_debug_level() >= 1u) emmc_dbg(1, "pio: reducing dump speed to 400k for recovery");
     }
 
     if (!cmd_ok) {
@@ -1258,6 +1304,7 @@ static bool emmc_read_block(uint32_t lba, bool hc_addressing, uint8_t out[EMMC_D
       cmd_no_r1_count = 0u;
     }
 
+    emmc_send_idle_clocks(8u);
     // Re-sync transfer state and retry.
     resync_ok = emmc_resync_transfer(rca, local_hc);
     if (!resync_ok) {
@@ -1265,7 +1312,7 @@ static bool emmc_read_block(uint32_t lba, bool hc_addressing, uint8_t out[EMMC_D
       if (app_debug_level() >= 1u) emmc_dbg(1, "cmd: resync failed (no R1 response)");
     }
   }
-  if (speed_reduced || speed_floor_forced) {
+  if (speed_floor_forced) {
     g_emmc.speed_hz = orig_speed;
     emmc_update_timing();
   }
@@ -1661,6 +1708,7 @@ void proto_emmc_poll(void) {
       if (g_emmc.dump_chunk_off >= EMMC_DUMP_BLOCK_SIZE) {
         g_emmc.dump_block_loaded = false;
         g_emmc.dump_done_blocks++;
+        emmc_send_idle_clocks(EMMC_DUMP_INTER_BLOCK_IDLE_CLKS);
         g_emmc.dump_last_progress_ms = now;
       }
     }
