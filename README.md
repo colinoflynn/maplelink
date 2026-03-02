@@ -19,7 +19,7 @@ hacking, requiring only a R-Pi Pico and some wires (and probably logic clips).
   * Minimal SFDP read/decoding, and status register read/decoding
 * SPI Flash dumping features:
   * Supports 3 & 4-byte addressing, hopefully detects correctly which to use
-  * Option to double-read each block to hopefully detect errors, aborts or retires if this happens with status
+  * Option to double-read each block to hopefully detect errors, aborts or retries if this happens with status
   * Can display on screen or dump to binary file. Preview data as it's dumping. Partial dumps can be saved if you abort.
   * Fast enough to not be infuriating for smaller flash sizes (see table below)
 * SPI RAW features:
@@ -28,9 +28,10 @@ hacking, requiring only a R-Pi Pico and some wires (and probably logic clips).
 * eMMC Features:
  * Mostly experimental implementation
  * Reads ID, sizes
- * Very slow dumping of user partition
-* Re-enable R-Pi bootloader for easy development without touching a USB cable
+ * Infuriatingly slow dumping of user partition that will abort part-way through most likely
+* Re-enable R-Pi bootloader for easy development without touching a button
 * Front-end and most processing code written by AI, I have no idea what it does or how it works (as god intended)
+* Randomly disconnects or times out (some would call this a bug)
 
 ### Speed Examples
 
@@ -46,7 +47,6 @@ Some test on my computer for SPI:
 | 512 MBit   | 5 MHz | Yes | 17:50 |
 | 512 MBit   | 1 MHz | No  | 12:32 |
 | 512 MBit   | 1 MHz | Yes | 35:34 |
-
 
 ## Usage Directions
 
@@ -79,14 +79,13 @@ cmake --build .
 
 If you need some of the SDK tools, you can get pre-build versions from the [pico-sdk-tools](https://github.com/raspberrypi/pico-sdk-tools) repository, make sure they match your SDK version.
 
-On Windows, you will likely want to download picotool (must be the SAME version as the SDK) and pass the directory with `-Dpicotool_DIR="/dir/to/picotool` for the first `cmake`. You can also pass paths to the compilers directly, in case you are using older compilers (e.g., like you got from the R-Pi Windows SDK) with a current pico-sdk. Here is both of those shown:
+On Windows, you will likely want to download picotool and pioasm (must be the SAME version as the SDK) and pass the directory with `-Dpicotool_DIR="/dir/to/picotool` and `-Dpioasm_DIR="/dir/to/pioasm` for the first `cmake`. You can also pass paths to the compilers directly, in case you are using older compilers (e.g., like you got from the R-Pi Windows SDK) with a current pico-sdk. Here is both of those shown:
 
 ```
 cmake -B build -G "Ninja" -DPICO_SDK_PATH="C:/dev/pico_sdk-src" -DCMAKE_C_COMPILER="C:/devtools/Pico SDK v1.5.1/gcc-arm-none-eabi/bin/arm-none-eabi-gcc.exe" -DCMAKE_CXX_COMPILER="C:/devtools/Pico SDK v1.5.1/gcc-arm-none-eabi/bin/arm-none-eabi-g++.exe" -Dpicotool_DIR="c:/devtools/picotool" -Dpioasm_DIR="c:/devtools/pioasm"
 ```
 
-If your build fails when trying to build `picotool` this is because it did not find a matching version, and is attempting to build it. On Windows you may not have a regular C/C++ compiler so this will fail. If you needed to use `pioasm` you would see a similar failure (this project does not require pioasm currently as does not use the PIO blocks).
-
+If your build fails when trying to build `picotool` this is because it did not find a matching version, and is attempting to build it. On Windows you may not have a regular C/C++ compiler so this will fail. The `pioasm` tool is needed for the PIO blocks (note the tool is pioasm, NOT picoasm). When passing the directories if using pre-built you must pass the path to the folder with the tool, NOT the path to the binary itself.
 
 ## Web UI workflow
 
