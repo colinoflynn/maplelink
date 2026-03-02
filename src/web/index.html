@@ -148,6 +148,8 @@
     <button id="tabEmmc" class="tabbtn">eMMC</button>
     <button id="tabDebug" class="tabbtn">DEBUG</button>
     <span class="spacer"></span>
+    <label>DEC <input id="numdec" type="text" placeholder="12345" style="width:110px"></label>
+    <label>HEX <input id="numhex" type="text" placeholder="0x3039" style="width:110px"></label>
     <span class="dim">USB:</span>
     <span id="connpill" class="livepill live-off">CONNECTING</span>
   </div>
@@ -356,11 +358,13 @@
       </div>
       <div class="gtitle">Dump to file</div>
       <div class="grow">
+        <label>Filename Prefix <input id="spidumpprefix" type="text" value="spi_dump_" style="width:130px"></label>
         <label>Dump Length <input id="spidumplen" type="number" min="1" step="256" value="4096"></label>
         <span class="dim">Dump range in hex: <span id="spidumprange">0x00000000 : 0x00000FFF</span></span>
-        <label><input id="spikeeppartial" type="checkbox" checked>Keep partial dumps</label>
         <button id="spidumpstart">Start Dump</button>
         <button id="spidumpstop">Stop Dump</button>
+        <button id="spidumpdlbtn">Download Bin</button>
+        <span class="dim" id="spidumpfilemeta">spi_dump_00000000_00000FFF.bin (0 bytes)</span>
       </div>
       <div class="grow">
         <label>Live rows <input id="spidumprows" type="number" min="1" max="64" step="1" value="16"></label>
@@ -560,7 +564,7 @@
     <div id="debugPanel" class="hidden">
       <div class="group">
         <div class="gtitle">About</div>
-        <div class="dim" style="margin-bottom:8px;">
+        <div class="idval" style="margin-bottom:8px;">
           MapleLink is a browser-based hardware hacking tool by
           <a href="https://bsky.app/profile/oflynn.com" target="_blank" rel="noopener noreferrer">Colin O'Flynn</a>.
           See more at
@@ -617,6 +621,8 @@
     const tabRaw=document.getElementById('tabRaw');
     const tabDebug=document.getElementById('tabDebug');
     const connPill=document.getElementById('connpill');
+    const numDec=document.getElementById('numdec');
+    const numHex=document.getElementById('numhex');
     const bootselBtn=document.getElementById('bootsel');
     const dbgLevel=document.getElementById('dbgLevel');
     const dbgApply=document.getElementById('dbgApply');
@@ -658,12 +664,14 @@
     const spiStartAddr=document.getElementById('spistartaddr');
     const spiDispLen=document.getElementById('spidisplen');
     const spiDumpLen=document.getElementById('spidumplen');
-    const spiKeepPartial=document.getElementById('spikeeppartial');
+    const spiDumpPrefix=document.getElementById('spidumpprefix');
     const spiDumpChunk=document.getElementById('spidumpchunk');
     const spiDumpRows=document.getElementById('spidumprows');
     const spiDumpDbl=document.getElementById('spidumpdbl');
     const spiDumpRetry=document.getElementById('spidumpretry');
     const spiDumpFf=document.getElementById('spidumpff');
+    const spiDumpDlBtn=document.getElementById('spidumpdlbtn');
+    const spiDumpFileMeta=document.getElementById('spidumpfilemeta');
     const spiPins=document.getElementById('spipins');
     const spiDump=document.getElementById('spidump');
     const spiSt=document.getElementById('spist');
@@ -843,6 +851,7 @@
     let xtermLoading=false;
     let xtermFailed=false;
     let rainbowPhase=0;
+    let numConvBusy=false;
     const MAX_HISTORY=12;
     const textHistory=[];
     const hexHistory=[];
@@ -857,8 +866,8 @@
     let dumpRawChunks=[];
     let dumpRecent=[];
     let dumpSessionActive=false;
-    let dumpDownloaded=false;
     let dumpStoreRaw=true;
+    let spiDumpStartAddr=0;
     let displayMode=false;
     let displayStopSent=false;
     let idPollCount=0;
@@ -1031,6 +1040,8 @@
     function parseNum(s,def){const n=parseInt(String(s||''),10);return Number.isFinite(n)?n:def;}
     function fmtInt(n){return Math.max(0,Math.floor(Number(n)||0)).toLocaleString('en-US').replace(/,/g,' ');}
     function parseHexU32(s,def){let t=String(s||'').trim().toLowerCase();if(t.startsWith('0x'))t=t.slice(2);if(!/^[0-9a-f]{1,8}$/.test(t))return def>>>0;return (parseInt(t,16)>>>0);}
+    function parseDecAny(s){const t=String(s||'').trim();if(!/^[0-9]+$/.test(t))return null;try{return BigInt(t);}catch(_){return null;}}
+    function parseHexAny(s){let t=String(s||'').trim().toLowerCase();if(t.startsWith('0x'))t=t.slice(2);if(!/^[0-9a-f]+$/.test(t))return null;try{return BigInt('0x'+t);}catch(_){return null;}}
     function hex32(v){return '0x'+((v>>>0).toString(16).toUpperCase().padStart(8,'0'));}
     function hex4(v){return ((v>>>0)&0xFFFF).toString(16).toUpperCase().padStart(4,'0');}
     function fmtBytes(n){
@@ -1471,12 +1482,37 @@
       emmcDumpFileMetaEl.textContent=emmcDumpFileName('.bin')+' ('+fmtInt(size)+' bytes)';
       updateEmmcDumpPlan();
     }
+    function spiHex32No0x(v){return ((v>>>0).toString(16).toUpperCase().padStart(8,'0'));}
+    function spiDumpPrefixName(){
+      const p=String((spiDumpPrefix&&spiDumpPrefix.value)||'');
+      return p.length?p:'spi_dump_';
+    }
+    function spiDumpPlannedLength(){
+      return Math.max(1,parseNum(spiDumpLen.value,4096));
+    }
+    function spiDumpCurrentEndAddr(){
+      const plannedLen=spiDumpPlannedLength();
+      if(dumpCapturedBytes>0){
+        return (spiDumpStartAddr + Math.max(0,dumpCapturedBytes-1))>>>0;
+      }
+      return (spiDumpStartAddr + Math.max(0,plannedLen-1))>>>0;
+    }
+    function spiDumpFileName(){
+      const start=spiDumpStartAddr>>>0;
+      const end=spiDumpCurrentEndAddr();
+      return spiDumpPrefixName()+'0x'+spiHex32No0x(start)+'_0x'+spiHex32No0x(end)+'.bin';
+    }
+    function updateSpiDumpFileMeta(){
+      const shownSize=Math.max(0,dumpCapturedBytes);
+      if(spiDumpFileMeta)spiDumpFileMeta.textContent=spiDumpFileName()+' ('+fmtInt(shownSize)+' bytes)';
+    }
     function dumpAppendBytes(arr){
       if(!arr||!arr.length)return;
       const u=(arr instanceof Uint8Array)?arr:Uint8Array.from(arr);
       const c=new Uint8Array(u.length);c.set(u);
       if(dumpStoreRaw)dumpRawChunks.push(c);
       dumpCapturedBytes+=c.length;
+      updateSpiDumpFileMeta();
       for(let i=0;i<c.length;i++)dumpRecent.push(c[i]);
       const keep=Math.max(16,dumpRowsLimit()*16);
       if(dumpRecent.length>keep)dumpRecent=dumpRecent.slice(dumpRecent.length-keep);
@@ -1489,13 +1525,10 @@
         spiSend('spi.display.stop');
       }
     }
-    function dumpDownload(partial){
-      if(dumpDownloaded||!dumpRawChunks.length)return;
-      const done=Math.max(0,dumpCapturedBytes);
-      const total=Math.max(0,dumpExpectedBytes);
-      const name='spi_dump_'+stamp()+(partial?'_partial_'+done+'of'+total:'')+'.bin';
-      saveBlob(name,'application/octet-stream',dumpRawChunks);
-      dumpDownloaded=true;
+    function dumpDownload(){
+      if(!dumpRawChunks.length){spiLog('[spi.dump] nothing captured yet','dim');return;}
+      saveBlob(spiDumpFileName(),'application/octet-stream',dumpRawChunks);
+      spiLog('[spi.dump] downloaded '+fmtInt(dumpCapturedBytes)+' bytes as '+spiDumpFileName(),'ok');
     }
     function parseIdHex(s){if(!s)return[];const toks=String(s).trim().split(/[\s,]+/).filter(Boolean);const out=[];for(const t0 of toks){let t=t0.toLowerCase();if(t.startsWith('0x'))t=t.slice(2);if(!/^[0-9a-f]{1,2}$/.test(t))continue;out.push(parseInt(t,16));}return out;}
     function hex2(n){return '0x'+(n&255).toString(16).toUpperCase().padStart(2,'0');}
@@ -1834,7 +1867,9 @@
         if(m.dump&&typeof m.dump.ff_opt==='boolean')spiDumpFf.checked=m.dump.ff_opt;
         if(m.dump&&typeof m.dump.start_addr==='number')spiStartAddr.value=hex32(m.dump.start_addr);
         if(m.pins){if(typeof m.pins.mosi==='number')setMap(mapMosi,m.pins.mosi,'');if(typeof m.pins.miso==='number')setMap(mapMiso,m.pins.miso,'');if(typeof m.pins.cs==='number')setMap(mapCs,m.pins.cs,'');if(typeof m.pins.clk==='number')setMap(mapClk,m.pins.clk,'');}
+        spiDumpStartAddr=parseHexU32(spiStartAddr.value,0)>>>0;
         updateReadRanges();
+        updateSpiDumpFileMeta();
         spiSt.textContent='config loaded';spiSt.className='ok';spiLog('[spi.config] '+JSON.stringify(m));return true;
       }
       if(m.type==='spi.pins'){
@@ -2001,14 +2036,12 @@
         spiSt.textContent=stt;spiSt.className='ok';spiLog('[spi.dump.status] '+JSON.stringify(m));
         spiDump.textContent='dump: '+stt+(detail?(' ('+detail+')'):'');
         setRunActive(spiDump,stt==='running');
-        if(stt==='running'){dumpSessionActive=true;dumpDownloaded=false;}
-        if(stt==='complete'&&dumpSessionActive){if(dumpStoreRaw)dumpDownload(false);dumpSessionActive=false;displayMode=false;displayStopSent=false;spiDumpRate.textContent='Rate: complete';}
+        if(stt==='running'){dumpSessionActive=true;}
+        if(stt==='complete'&&dumpSessionActive){dumpSessionActive=false;displayMode=false;displayStopSent=false;spiDumpRate.textContent='Rate: complete';}
         if(stt==='stopped'&&dumpSessionActive){
-          if(dumpStoreRaw&&spiKeepPartial.checked)dumpDownload(true);
           dumpSessionActive=false;displayMode=false;displayStopSent=false;spiDumpRate.textContent='Rate: stopped';
         }
         if(stt==='error'){
-          if(dumpSessionActive&&dumpStoreRaw&&spiKeepPartial.checked&&/double-read/i.test(detail))dumpDownload(true);
           dumpSessionActive=false;displayMode=false;displayStopSent=false;spiDumpRate.textContent='Rate: error';
         }
         return true;
@@ -2194,6 +2227,22 @@
     retainKb.addEventListener('input',()=>{if(xterm)xterm.options.scrollback=xtermScrollback();});
     decodeMode.addEventListener('change',syncDecodeMode);
     if(termThemeSel)termThemeSel.addEventListener('change',applyTerminalTheme);
+    if(numDec&&numHex){
+      numDec.addEventListener('input',()=>{
+        if(numConvBusy)return;
+        numConvBusy=true;
+        const v=parseDecAny(numDec.value);
+        numHex.value=(v===null)?'':'0x'+v.toString(16).toUpperCase();
+        numConvBusy=false;
+      });
+      numHex.addEventListener('input',()=>{
+        if(numConvBusy)return;
+        numConvBusy=true;
+        const v=parseHexAny(numHex.value);
+        numDec.value=(v===null)?'':v.toString(10);
+        numConvBusy=false;
+      });
+    }
     rxMonEn.addEventListener('change',()=>{send({type:rxMonEn.checked?'uart.rxmon.start':'uart.rxmon.stop'});});
     rxMonReset.addEventListener('click',()=>{
       rxMonEdgesTotal=0;
@@ -2366,11 +2415,18 @@
     spiDumpDbl.addEventListener('change',renderVerifyStatus);
     spiDumpRetry.addEventListener('input',()=>{verifyMaxRetriesCfg=parseNum(spiDumpRetry.value,0);renderVerifyStatus();});
     spiDumpRetry.addEventListener('change',()=>{verifyMaxRetriesCfg=parseNum(spiDumpRetry.value,0);renderVerifyStatus();});
-    [spiStartAddr,spiDispLen,spiDumpLen].forEach(el=>{el.addEventListener('input',updateReadRanges);el.addEventListener('change',updateReadRanges);});
+    [spiStartAddr,spiDispLen,spiDumpLen].forEach(el=>{el.addEventListener('input',()=>{updateReadRanges();updateSpiDumpFileMeta();});el.addEventListener('change',()=>{updateReadRanges();updateSpiDumpFileMeta();});});
+    if(spiDumpPrefix){
+      spiDumpPrefix.addEventListener('input',updateSpiDumpFileMeta);
+      spiDumpPrefix.addEventListener('change',updateSpiDumpFileMeta);
+    }
+    if(spiDumpDlBtn)spiDumpDlBtn.onclick=()=>dumpDownload();
     function startRead(toFile){
       const startAddr=parseHexU32(spiStartAddr.value,0);
+      spiDumpStartAddr=startAddr>>>0;
       dumpExpectedBytes=Math.max(1,toFile?parseNum(spiDumpLen.value,4096):parseNum(spiDispLen.value,8388608));
-      dumpCapturedBytes=0;dumpRawChunks=[];dumpRecent=[];dumpDownloaded=false;dumpSessionActive=true;dumpStoreRaw=toFile;
+      dumpCapturedBytes=0;dumpRawChunks=[];dumpRecent=[];dumpSessionActive=true;dumpStoreRaw=toFile;
+      updateSpiDumpFileMeta();
       resetVerifyStatus();
       displayMode=!toFile;
       displayStopSent=false;
@@ -2434,6 +2490,7 @@
     updateEmmcFindPlan();
     resetSnifferUi();
     updateReadRanges();
+    updateSpiDumpFileMeta();
     resetVerifyStatus();
     openWs();
     keepCursor();
