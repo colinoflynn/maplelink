@@ -28,10 +28,13 @@ hacking, requiring only a R-Pi Pico and some wires (and probably logic clips).
 * eMMC Features:
   * Mostly experimental implementation
   * Reads ID, sizes
-  * Infuriatingly slow dumping of user partition that will abort part-way through most likely
+  * Infuriatingly slow dumping of user partition that m abort part-way through most likely
 * Re-enable R-Pi bootloader for easy development without touching a button
-* Front-end and most processing code written by AI, I have no idea what it does or how it works (as god intended)
+* Front-end and much of the firmware code written by AI, I have no idea what it does or how it works (as god intended)
 * Randomly disconnects or times out (some would call this a bug)
+
+Note vt100 terminal mode requires internet to get the vt100 processing code, this can be moved onto the R-Pi as well but by
+default I did not for space reasons (there is a stub to copy it to).
 
 ### Speed Examples
 
@@ -52,13 +55,148 @@ Some test on my computer for SPI:
 
 ### Terminal Usage
 
-### SPI Dump: Basic Usage
+1. Open the **Terminal** tab.
+2. Set serial parameters:
+   - `Baud`, `Data`, `Parity`, `Stop`, `Enter`.
+3. Choose send mode:
+   - `as you type`: sends each character immediately.
+   - `on Enter only`: buffers until Enter.
+4. Choose decode mode:
+   - `plain`: raw text.
+   - `ansi colors`: interprets ANSI color escapes.
+   - `vt100 (xterm.js)`: full terminal emulation (requires internet by default).
+5. Optional display controls:
+   - `Terminal Theme`: `default`, `matrix`, `rainbow`, `pink`, `hot pink`.
+   - `hex view`: enables a hex view of incoming data
+   - `Hex cols`: defines the hex width
+   - `Hex gap ms`: After this many ms of no data, will make a new line in the hex view (to help with packets)
+   - `Backlog KB`: limits log size
+   - `Disable Autoscroll`: stops terminal from jumping to bottom
+   - `local echo`: normal terminal stuff
+6. Send data:
+   - `Send Text` for plain text, will interperate `\n`, `\r`, `\t`, `\0`, `\b`, `\f`, `\v`, `\\`, `\"`, `\'`, `\xNN` (byte), `\uNNNN` and `\u{...}` (Unicode)
+   - `Send Bytes` for hex byte sequences (`01 02 FF` or `0x41,0x42`).
+   Both of these save recently sent.
+7. Logs:
+   - `Download Text Log` exports terminal text.
+   - `Download Raw Binary` exports raw RX bytes.
 
-### SPI Dump: Detecting Conflicting Access
+### SPI Dump
+
+#### Detecting Conflicting Access
+
+1. In **Pin Monitor**, run `Start Pin Detect` to view MOSI/MISO/CS/CLK activity while system is running.
+2. Stop the **Pin Monitor**
+2. In **ID Poll**:
+   - Click `Monitor activity between polls`.
+   - Click `Start ID Poll`.
+3. Watch:
+   - `Between Polls` and `Window Activity` fields.
+   - `INTERFERENCE` indicates external activity on the bus.
+
+If it is reading a valid ID and says *CLEAR* between reads, this indicates you might have a good link.
+
+#### Basic Dumping
+
+1. Setup link as above.
+2. Perform ID Poll & SFDP read to get flash information.
+3. This should auto-fill the "Dump Length", and detect if `Addr Bytes` (`3` or `4`) is needed.
+4. Set `Double-read verify` if you want a more reliable dump - this will attempt each read twice. Set the number of
+   `Automatic Retries` if you want it to also retry on failed (instead of aborting).
+5. For on-screen preview only (recommended to check data looks reasonable).
+   - Use **Display**: set `Display Length`, click `Start Display`.
+5. For capture:
+   - In **Dump to file**, set `Filename Prefix` and `Dump Length` (should be auto-filled).
+   - Click `Start Dump`.
+   - Click `Stop Dump` if needed (partial data is still kept in UI memory).
+   - Check the full dump is done (shows as complete), otherwise check if there was a read error.
+   - Click `Download Bin`.
+
+#### SPI SFDP / Status / Sniffer
+
+1. In SPI tab, use `Read SFDP` to parse density/address mode/read command hints.
+2. Use `Read Status Register` to read/decode SR1/SR2/SR3 and common protection bits.
+3. `Start Sniffer` captures SPI transactions (best effort; may not keep up with long high-speed streams).
 
 ### SPI Raw Packet Mode
 
+1. Open **SPI RAW** tab.
+2. Set SPI speed with `Apply Speed`.
+3. Use command rows to send arbitrary SPI byte sequences (with optional extra clocks/padding as configured in UI).
+4. Read TX/RX in the raw log area.
+
 ### eMMC Mode
+
+#### Safety / Pin checks / ID
+
+1. Open **eMMC** tab.
+2. In **Safety and Link**:
+   - Set `Tri-state by default`, `Pull-ups enabled`.
+   - Set `Speed`, `Retry Idle`.
+   - Click `Apply I/O Safety` and `Apply Speed`.
+3. Use:
+   - `Start Pin Detect` for raw pin activity.
+   - `CMD Test Waveform`, `CMD1 Sequence Test`, `SD Init Test` for link-level checks.
+4. Use `Start ID Poll` to repeatedly read ID/OCR/CID/CSD.
+
+#### Layout
+
+1. Click `Read Layout` to fetch EXT_CSD layout fields.
+2. Use `Full Dump Hint` / `sec_count` output to estimate full user-area size.
+
+#### Dump
+
+1. Configure:
+   - `Filename Prefix`
+   - `Start LBA`
+   - `Blocks`
+   - `Chunk`
+   - `Double-read verify`
+   - `Verify retries`
+   - `Auto retries`
+2. Click `Start Dump`.
+3. Monitor:
+   - Progress line (bytes + current LBA)
+   - Rate/Avg/ETA
+   - Error counters (`CRC`, `no-R1`, `resync`, `tx-busy`)
+4. Click `Stop Dump` for partial capture if needed.
+5. Download:
+   - `Download Bin` for raw binary.
+   - `Download GZip` for compressed binary (browser-dependent support/performance).
+6. eMMC filename format:
+   - `PREFIXSTARTLBA_ENDLBA.bin` (or `.bin.gz`)
+
+#### Scan Memory
+
+1. Configure:
+   - `Start LBA`
+   - `Sample Every n=` (sampling stride is `n+1` blocks)
+   - `Total Samples`
+   - `Min Span (blocks)` display filter
+2. Click `Start Scan`.
+3. Table outputs grouped ranges:
+   - `Type`: `empty` or `non-empty`
+   - `Start LBA`, `End LBA`, `Span`, `Size`
+4. `Min Span` only filters what is shown; it does not change collected data.
+5. `Clear Results` clears the table view.
+
+#### Find Start
+
+1. Configure:
+   - `Start LBA`
+   - `Max Search Length (Blocks)`
+2. Click `Start Find`.
+3. It scans forward and stops at first non-empty block, or reports not found.
+4. Status line shows running progress and final result.
+
+### Debug / About
+
+1. Open **DEBUG** tab.
+2. Set debug level (`0..3`) with `Apply Debug Level`.
+3. Use `Read Debug Level` to confirm runtime level.
+4. `Clear Debug Log` clears UI debug output.
+5. `Enter BOOTSEL` reboots Pico into USB bootloader mode.
+6. About panel includes firmware/build timestamp and project links.
 
 ## Developer Notes
 
@@ -88,6 +226,10 @@ cmake -B build -G "Ninja" -DPICO_SDK_PATH="C:/dev/pico_sdk-src" -DCMAKE_C_COMPIL
 ```
 
 If your build fails when trying to build `picotool` this is because it did not find a matching version, and is attempting to build it. On Windows you may not have a regular C/C++ compiler so this will fail. The `pioasm` tool is needed for the PIO blocks (note the tool is pioasm, NOT picoasm). When passing the directories if using pre-built you must pass the path to the folder with the tool, NOT the path to the binary itself.
+
+### eMMC Improvements
+
+The eMMC code is needlessly slow, in particular I think some of the bit counts are off. I manually fixed some items but it's also uses some extra clock cycles around to get this working.
 
 ### Web UI workflow
 

@@ -6,6 +6,20 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <style>
     :root { --bg:#0b0f14; --bg2:#111827; --fg:#e6edf3; --dim:#9ca3af; --line:#334155; --ok:#22c55e; --err:#ef4444; --term-bg:#0b0f14; --term-fg:#e6edf3; --term-hex-fg:#93c5fd; --term-hex-bg:#0a1222; --term-shadow:none; }
+    body.ui-theme-purplepink {
+      --bg:#120a1c;
+      --bg2:#2a1238;
+      --fg:#ffe7f8;
+      --dim:#c9a4d6;
+      --line:#7a3f91;
+      --ok:#4ade80;
+      --err:#fb7185;
+      --term-bg:#140a20;
+      --term-fg:#ffd8f3;
+      --term-hex-fg:#f9a8d4;
+      --term-hex-bg:#1a0d2b;
+      --term-shadow:0 0 3px rgba(244,114,182,.22);
+    }
     body { margin:0; background:var(--bg); color:var(--fg); font:14px/1.4 monospace; }
     .bar { padding:8px; border-bottom:1px solid #1f2937; background:var(--bg2); display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
     .tabs { position:sticky; top:0; z-index:5; }
@@ -138,6 +152,33 @@
       color:#86efac;
       font-weight:700;
     }
+    body.ui-theme-purplepink .bar { border-bottom-color:#4c255f; background:var(--bg2); }
+    body.ui-theme-purplepink .group { border-bottom-color:#4c255f; background:#211033; }
+    body.ui-theme-purplepink .gtitle { color:#f0abfc; }
+    body.ui-theme-purplepink input,
+    body.ui-theme-purplepink select,
+    body.ui-theme-purplepink button { background:#2a1536; border-color:#7a3f91; color:var(--fg); }
+    body.ui-theme-purplepink button:hover { border-color:#f472b6; background:#341a47; }
+    body.ui-theme-purplepink button:active { border-color:#ec4899; background:#301643; box-shadow:0 0 0 1px rgba(236,72,153,.25) inset; }
+    body.ui-theme-purplepink button:focus-visible { box-shadow:0 0 0 2px rgba(244,114,182,.55); }
+    body.ui-theme-purplepink .tabbtn.active { border-color:#f472b6; box-shadow:0 0 0 1px #f472b6 inset; }
+    body.ui-theme-purplepink .pane { border-right-color:#4c255f; }
+    body.ui-theme-purplepink #spiout,
+    body.ui-theme-purplepink #emmcout,
+    body.ui-theme-purplepink #rawout,
+    body.ui-theme-purplepink #dbgout,
+    body.ui-theme-purplepink #sniffview,
+    body.ui-theme-purplepink #spilasthex,
+    body.ui-theme-purplepink #emmcdumplast { border-color:#4c255f; background:#180d29; }
+    body.ui-theme-purplepink .chip,
+    body.ui-theme-purplepink .idbox,
+    body.ui-theme-purplepink .dbar { border-color:#4c255f; background:#1a0e2b; }
+    body.ui-theme-purplepink .wmap th,
+    body.ui-theme-purplepink .wmap td { border-color:#4c255f; }
+    body.ui-theme-purplepink .wmap th { background:#1a0e2b; color:#f9a8d4; }
+    body.ui-theme-purplepink #debugPanel a { color:#f9a8d4; text-decoration-color:rgba(249,168,212,.75); }
+    body.ui-theme-purplepink #debugPanel a:hover,
+    body.ui-theme-purplepink #debugPanel a:focus { color:#fbcfe8; text-decoration-color:rgba(251,207,232,.98); }
   </style>
 </head>
 <body>
@@ -146,7 +187,7 @@
     <button id="tabSpi" class="tabbtn">SPI FLASH</button>
     <button id="tabRaw" class="tabbtn">SPI RAW</button>
     <button id="tabEmmc" class="tabbtn">eMMC</button>
-    <button id="tabDebug" class="tabbtn">DEBUG</button>
+    <button id="tabDebug" class="tabbtn">System</button>
     <span class="spacer"></span>
     <label>DEC <input id="numdec" type="text" placeholder="12345" style="width:110px"></label>
     <label>HEX <input id="numhex" type="text" placeholder="0x3039" style="width:110px"></label>
@@ -230,11 +271,11 @@
       <div class="spiwire">
         <div class="chip">
           <div class="ctitle">Top View (Pin 1 dot/notch side)</div>
-          <pre>         .----.
-   /CS  1|    |8  VCC (3V3)
-   MISO 2|    |7  /HOLD
-   /WP  3|    |6  SCK
-   GND  4|____|5  MOSI</pre>
+          <pre>              .----.
+   /CS       1|o   |8  VCC (3V3)
+   IO1 :  DO 2|    |7  /HOLD : IO3
+   IO2 : /WP 3|    |6  SCK
+   GND       4|____|5  DI : IO0</pre>
         </div>
         <div>
           <table class="wmap">
@@ -577,6 +618,15 @@
         </div>
     </div>
     <div class="group">
+      <div class="gtitle">Interface</div>
+      <div class="grow">
+        <label>Theme <select id="uitheme">
+          <option value="default" selected>default (blue dark)</option>
+          <option value="purplepink">purple/pink</option>
+        </select></label>
+      </div>
+    </div>
+    <div class="group">
       <div class="gtitle">Debug Controls</div>
       <div class="grow">
         <label>Level <select id="dbgLevel">
@@ -632,6 +682,7 @@
     const dbgOut=document.getElementById('dbgout');
     const aboutFw=document.getElementById('aboutFw');
     const aboutBuild=document.getElementById('aboutBuild');
+    const uiThemeSel=document.getElementById('uitheme');
     const spiCfgBtn=document.getElementById('spicfg');
     const spiApplyIoBtn=document.getElementById('spiapplyio');
     const spiSetSpeedBtn=document.getElementById('spisetspeed');
@@ -2147,6 +2198,29 @@
     function enterBytes(){if(enterMode.value==='none')return new Uint8Array([]);if(enterMode.value==='lf')return new Uint8Array([10]);if(enterMode.value==='crlf')return new Uint8Array([13,10]);return new Uint8Array([13]);}
     function sendBinary(arr){if(ws&&ws.readyState===1&&arr&&arr.length>0)ws.send(arr);}
     function sendTextLine(str){if(!str)return;sendBinary(enc.encode(str));}
+    function parseEscapes(s){
+      if(!s||s.indexOf('\\')<0)return s;
+      return s.replace(/\\(x[0-9a-fA-F]{2}|u\{[0-9a-fA-F]+\}|u[0-9a-fA-F]{4}|[nrt0\\'"bfv])/g,(m,t)=>{
+        if(t==='n')return '\n';
+        if(t==='r')return '\r';
+        if(t==='t')return '\t';
+        if(t==='0')return '\0';
+        if(t==='b')return '\b';
+        if(t==='f')return '\f';
+        if(t==='v')return '\v';
+        if(t==='\\')return '\\';
+        if(t==="'")return "'";
+        if(t==='"')return '"';
+        if(t[0]==='x')return String.fromCharCode(parseInt(t.slice(1),16));
+        if(t.startsWith('u{')){
+          const cp=parseInt(t.slice(2,-1),16);
+          if(Number.isFinite(cp)&&cp>=0&&cp<=0x10FFFF)return String.fromCodePoint(cp);
+          return m;
+        }
+        if(t[0]==='u')return String.fromCharCode(parseInt(t.slice(1),16));
+        return m;
+      });
+    }
     function parseByteInput(s){const toks=s.trim().split(/[\s,]+/).filter(Boolean);const out=[];for(const t0 of toks){let t=t0.toLowerCase();if(t.startsWith('0x'))t=t.slice(2);if(!/^[0-9a-f]{1,2}$/.test(t))throw new Error('bad byte: '+t0);out.push(parseInt(t,16));}return new Uint8Array(out);}
     function addHistory(list,val){const v=(val||'').trim();if(!v)return;const i=list.indexOf(v);if(i>=0)list.splice(i,1);list.unshift(v);if(list.length>MAX_HISTORY)list.length=MAX_HISTORY;}
     function syncHistory(sel,list,label){sel.innerHTML='';const first=document.createElement('option');first.value='';first.textContent=label;sel.appendChild(first);for(const v of list){const o=document.createElement('option');o.value=v;o.textContent=v.length>72?v.slice(0,72)+'...':v;sel.appendChild(o);}sel.value='';}
@@ -2177,6 +2251,18 @@
           if(typeof xterm.refresh==='function')xterm.refresh(0,xterm.rows-1);
         }catch(_){}
       }
+    }
+    function applyUiTheme(){
+      const name=String((uiThemeSel&&uiThemeSel.value)||'default').toLowerCase();
+      document.body.classList.toggle('ui-theme-purplepink',name==='purplepink');
+      try{localStorage.setItem('ui_theme',name);}catch(_){}
+    }
+    function restoreUiTheme(){
+      let name='default';
+      try{name=String(localStorage.getItem('ui_theme')||'default').toLowerCase();}catch(_){}
+      if(name!=='purplepink')name='default';
+      if(uiThemeSel)uiThemeSel.value=name;
+      applyUiTheme();
     }
     async function ensureXterm(){if(xterm||xtermLoading||xtermFailed)return;xtermLoading=true;try{loadCss('__XTERM_CSS_URL__');if(!window.Terminal){try{await loadScript('__XTERM_JS_PRIMARY__');}catch(_){await loadScript('__XTERM_JS_FALLBACK__');}}const p=terminalThemePalette(terminalThemeName());xterm=new window.Terminal({cursorBlink:true,convertEol:false,scrollback:xtermScrollback(),theme:p.xterm});xterm.open(termVt);xterm.onData(d=>sendBinary(enc.encode(d)));xterm.write('\r\n[VT100 mode active]\r\n');}catch(_){xtermFailed=true;appendTerm('\n[error failed to load xterm.js, check internet access]\n','err');decodeMode.value='ansi';shell.classList.remove('vt');}finally{xtermLoading=false;}}
     function syncDecodeMode(){if(decodeMode.value==='vt100'){shell.classList.add('vt');ensureXterm();}else{shell.classList.remove('vt');}layoutTerminalShell();}
@@ -2215,7 +2301,7 @@
 
     applyBtn.onclick=()=>{send({type:'uart.set_config',port:'uart0',baud:parseInt(document.getElementById('baud').value,10)||115200,data_bits:parseInt(document.getElementById('data').value,10)||8,parity:document.getElementById('parity').value,stop_bits:parseInt(document.getElementById('stop').value,10)||1,flow:'none'});markDirty(false);};
     document.getElementById('sendbytes').onclick=()=>{try{const src=tx.value;const b=parseByteInput(src);if(!b.length)return;sendBinary(b);addHistory(hexHistory,src);syncHistory(histHex,hexHistory,'recent hex...');}catch(err){appendTerm('\n[error '+err.message+']\n','err');}};
-    document.getElementById('sendtext').onclick=()=>{const src=txStr.value;if(!src)return;sendBinary(enc.encode(src));addHistory(textHistory,src);syncHistory(histText,textHistory,'recent text...');};
+    document.getElementById('sendtext').onclick=()=>{const src=txStr.value;if(!src)return;const parsed=parseEscapes(src);sendBinary(enc.encode(parsed));addHistory(textHistory,src);syncHistory(histText,textHistory,'recent text...');};
     txStr.addEventListener('keydown',(e)=>{if(e.key==='Enter'){e.preventDefault();document.getElementById('sendtext').click();}});
     histText.addEventListener('change',()=>{if(histText.value)txStr.value=histText.value;});
     histHex.addEventListener('change',()=>{if(histHex.value)tx.value=histHex.value;});
@@ -2227,6 +2313,7 @@
     retainKb.addEventListener('input',()=>{if(xterm)xterm.options.scrollback=xtermScrollback();});
     decodeMode.addEventListener('change',syncDecodeMode);
     if(termThemeSel)termThemeSel.addEventListener('change',applyTerminalTheme);
+    if(uiThemeSel)uiThemeSel.addEventListener('change',applyUiTheme);
     if(numDec&&numHex){
       numDec.addEventListener('input',()=>{
         if(numConvBusy)return;
@@ -2478,6 +2565,7 @@
     layoutTerminalShell();
     layoutSpiLog();
     layoutEmmcLog();
+    restoreUiTheme();
     applyTerminalTheme();
     syncDecodeMode();
     buildRawRows();
