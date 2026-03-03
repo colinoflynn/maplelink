@@ -93,6 +93,9 @@ The LED on the R-Pi Pico has 3 states:
 
 You should get slow blinking until you access the website.
 
+If you are unsure about slow vs. fast blinking, plug the USB into a power adapter instead of a computer. This
+will trigger the fast blinking mode.
+
 ### Phone Usage
 
 So far tested on Pixel 8A running Android 16:
