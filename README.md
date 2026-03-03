@@ -184,6 +184,15 @@ If it is reading a valid ID and says *CLEAR* between reads, this indicates you m
 
 ### eMMC Mode
 
+eMMC mode uses only three pins on the eMMC, which limits data speed greatly:
+
+ * D0
+ * CMD
+ * CLK
+
+I was able to get around 200 KB/s dumping speed, which means you won't want to dump the full files. The device
+implements some searching modes to try and find more interesting (non-empty) areas so you can dump specific areas to decide how much effort you want to put into dumping the full flash.
+
 #### Safety / Pin checks / ID
 
 1. Open **eMMC** tab.
