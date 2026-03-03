@@ -1,0 +1,14 @@
+.program spi_sniff_byte_rx
+
+.wrap_target
+wait_cs_low:
+    wait 0 gpio 17
+
+bitloop:
+    wait 0 gpio 18
+    wait 1 gpio 18
+    nop [1]
+    in pins, 1
+    jmp pin wait_cs_low
+    jmp bitloop
+.wrap

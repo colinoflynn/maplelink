@@ -6,9 +6,12 @@
 #include <string.h>
 
 #include "app_transport.h"
+#include "hardware/dma.h"
 #include "hardware/gpio.h"
+#include "hardware/pio.h"
 #include "hardware/spi.h"
 #include "pico/stdlib.h"
+#include "spi_sniff_byte_rx.pio.h"
 
 #define SPI_DEV spi0
 #define SPI_PORT_NAME "spi0"
@@ -73,11 +76,17 @@ typedef struct {
   uint8_t lv_cs;
   uint8_t lv_clk;
   bool spi_active;
+  bool sniff_pio_ready;
+  bool sniff_dma_ready;
+  bool sniff_dma_active;
+  PIO sniff_pio;
+  uint sniff_pio_off;
+  uint sniff_sm_mosi;
+  uint sniff_sm_miso;
+  int sniff_dma_ch_mosi;
+  int sniff_dma_ch_miso;
   bool sniff_frame_active;
-  uint8_t sniff_cur_tx;
-  uint8_t sniff_cur_rx;
-  uint8_t sniff_bit_count;
-  uint8_t sniff_prev_clk;
+  uint8_t sniff_prev_cs;
   uint16_t sniff_len;
   uint16_t sniff_dropped_frame;
   uint32_t sniff_dropped_total;
@@ -148,6 +157,9 @@ static uint32_t clamp_u32(uint32_t v, uint32_t lo, uint32_t hi) {
   if (v > hi) return hi;
   return v;
 }
+
+static void sniff_pio_stop(void);
+static void sniff_dma_stop(void);
 
 static void pin_input(uint pin) {
   gpio_init(pin);
@@ -621,7 +633,10 @@ static void send_spi_status(const char *state, const char *detail) {
 }
 
 static void ensure_safe_exclusion(void) {
-  if (g_spi.dump_enabled || g_spi.idpoll_enabled) g_spi.sniffer_enabled = false;
+  if (g_spi.dump_enabled || g_spi.idpoll_enabled) {
+    g_spi.sniffer_enabled = false;
+    sniff_pio_stop();
+  }
 }
 
 static void poll_pin_levels_and_transitions(void) {
@@ -684,60 +699,265 @@ static void sniff_emit_frame(void) {
   (void)app_send_text(out);
 }
 
+static bool sniff_pio_init(void) {
+  PIO pio_try[2] = {pio1, pio0};
+  size_t i;
+
+  if (g_spi.sniff_pio_ready) return true;
+
+  for (i = 0; i < (sizeof(pio_try) / sizeof(pio_try[0])); i++) {
+    PIO pio = pio_try[i];
+    int sm_mosi;
+    int sm_miso;
+    pio_sm_config c;
+
+    if (!pio_can_add_program(pio, &spi_sniff_byte_rx_program)) continue;
+
+    sm_mosi = pio_claim_unused_sm(pio, false);
+    if (sm_mosi < 0) continue;
+    sm_miso = pio_claim_unused_sm(pio, false);
+    if (sm_miso < 0) {
+      pio_sm_unclaim(pio, (uint)sm_mosi);
+      continue;
+    }
+
+    g_spi.sniff_pio = pio;
+    g_spi.sniff_sm_mosi = (uint)sm_mosi;
+    g_spi.sniff_sm_miso = (uint)sm_miso;
+    g_spi.sniff_pio_off = pio_add_program(pio, &spi_sniff_byte_rx_program);
+
+    pio_gpio_init(pio, SPI_MOSI_PIN);
+    pio_gpio_init(pio, SPI_MISO_PIN);
+    pio_gpio_init(pio, SPI_CS_PIN);
+    pio_gpio_init(pio, SPI_SCK_PIN);
+
+    c = spi_sniff_byte_rx_program_get_default_config(g_spi.sniff_pio_off);
+    sm_config_set_jmp_pin(&c, SPI_CS_PIN);
+    sm_config_set_in_shift(&c, false, true, 8);
+    // Sniffer is RX-only; join FIFO for deeper buffering.
+    sm_config_set_fifo_join(&c, PIO_FIFO_JOIN_RX);
+    sm_config_set_clkdiv(&c, 1.0f);
+
+    sm_config_set_in_pins(&c, SPI_MOSI_PIN);
+    pio_sm_set_consecutive_pindirs(pio, g_spi.sniff_sm_mosi, SPI_MOSI_PIN, 1, false);
+    pio_sm_set_consecutive_pindirs(pio, g_spi.sniff_sm_mosi, SPI_CS_PIN, 1, false);
+    pio_sm_set_consecutive_pindirs(pio, g_spi.sniff_sm_mosi, SPI_SCK_PIN, 1, false);
+    pio_sm_init(pio, g_spi.sniff_sm_mosi, g_spi.sniff_pio_off, &c);
+
+    sm_config_set_in_pins(&c, SPI_MISO_PIN);
+    pio_sm_set_consecutive_pindirs(pio, g_spi.sniff_sm_miso, SPI_MISO_PIN, 1, false);
+    pio_sm_set_consecutive_pindirs(pio, g_spi.sniff_sm_miso, SPI_CS_PIN, 1, false);
+    pio_sm_set_consecutive_pindirs(pio, g_spi.sniff_sm_miso, SPI_SCK_PIN, 1, false);
+    pio_sm_init(pio, g_spi.sniff_sm_miso, g_spi.sniff_pio_off, &c);
+
+    pio_sm_set_enabled(pio, g_spi.sniff_sm_mosi, false);
+    pio_sm_set_enabled(pio, g_spi.sniff_sm_miso, false);
+    pio_sm_clear_fifos(pio, g_spi.sniff_sm_mosi);
+    pio_sm_clear_fifos(pio, g_spi.sniff_sm_miso);
+    pio_sm_restart(pio, g_spi.sniff_sm_mosi);
+    pio_sm_restart(pio, g_spi.sniff_sm_miso);
+
+    g_spi.sniff_pio_ready = true;
+    if (app_debug_level() >= 2u) {
+      char m[96];
+      snprintf(m, sizeof(m), "sniffer pio init ok (%s sm=%u/%u off=%u)",
+               (pio == pio0) ? "pio0" : "pio1",
+               (unsigned)g_spi.sniff_sm_mosi, (unsigned)g_spi.sniff_sm_miso,
+               (unsigned)g_spi.sniff_pio_off);
+      spi_dbg(2, m);
+    }
+    return true;
+  }
+
+  g_spi.sniff_pio_ready = false;
+  if (app_debug_level() >= 1u) spi_dbg(1, "sniffer pio init failed");
+  return false;
+}
+
+static bool sniff_dma_init(void) {
+  if (g_spi.sniff_dma_ready) return true;
+  g_spi.sniff_dma_ch_mosi = dma_claim_unused_channel(false);
+  if (g_spi.sniff_dma_ch_mosi < 0) return false;
+  g_spi.sniff_dma_ch_miso = dma_claim_unused_channel(false);
+  if (g_spi.sniff_dma_ch_miso < 0) {
+    dma_channel_unclaim((uint)g_spi.sniff_dma_ch_mosi);
+    g_spi.sniff_dma_ch_mosi = -1;
+    return false;
+  }
+  g_spi.sniff_dma_ready = true;
+  if (app_debug_level() >= 2u) {
+    char m[96];
+    snprintf(m, sizeof(m), "sniffer dma init ok (ch=%d/%d)",
+             g_spi.sniff_dma_ch_mosi, g_spi.sniff_dma_ch_miso);
+    spi_dbg(2, m);
+  }
+  return true;
+}
+
+static void sniff_dma_start_frame(void) {
+  dma_channel_config c_mosi;
+  dma_channel_config c_miso;
+
+  if (!g_spi.sniff_dma_ready) return;
+
+  dma_channel_abort((uint)g_spi.sniff_dma_ch_mosi);
+  dma_channel_abort((uint)g_spi.sniff_dma_ch_miso);
+
+  c_mosi = dma_channel_get_default_config((uint)g_spi.sniff_dma_ch_mosi);
+  channel_config_set_transfer_data_size(&c_mosi, DMA_SIZE_8);
+  channel_config_set_read_increment(&c_mosi, false);
+  channel_config_set_write_increment(&c_mosi, true);
+  channel_config_set_dreq(&c_mosi, pio_get_dreq(g_spi.sniff_pio, g_spi.sniff_sm_mosi, false));
+  dma_channel_configure((uint)g_spi.sniff_dma_ch_mosi, &c_mosi,
+                        g_spi.sniff_tx, &g_spi.sniff_pio->rxf[g_spi.sniff_sm_mosi],
+                        SPI_MAX_SNIFF_BYTES, false);
+
+  c_miso = dma_channel_get_default_config((uint)g_spi.sniff_dma_ch_miso);
+  channel_config_set_transfer_data_size(&c_miso, DMA_SIZE_8);
+  channel_config_set_read_increment(&c_miso, false);
+  channel_config_set_write_increment(&c_miso, true);
+  channel_config_set_dreq(&c_miso, pio_get_dreq(g_spi.sniff_pio, g_spi.sniff_sm_miso, false));
+  dma_channel_configure((uint)g_spi.sniff_dma_ch_miso, &c_miso,
+                        g_spi.sniff_rx, &g_spi.sniff_pio->rxf[g_spi.sniff_sm_miso],
+                        SPI_MAX_SNIFF_BYTES, false);
+
+  dma_start_channel_mask((1u << (uint)g_spi.sniff_dma_ch_mosi) |
+                         (1u << (uint)g_spi.sniff_dma_ch_miso));
+  g_spi.sniff_dma_active = true;
+}
+
+static void sniff_dma_stop(void) {
+  if (!g_spi.sniff_dma_ready) return;
+  dma_channel_abort((uint)g_spi.sniff_dma_ch_mosi);
+  dma_channel_abort((uint)g_spi.sniff_dma_ch_miso);
+  g_spi.sniff_dma_active = false;
+}
+
+static void sniff_dma_finish_frame(void) {
+  uint32_t got_mosi;
+  uint32_t got_miso;
+  uint32_t got_min;
+  uintptr_t wr_mosi;
+  uintptr_t wr_miso;
+  uintptr_t base_mosi;
+  uintptr_t base_miso;
+
+  if (!g_spi.sniff_dma_ready || !g_spi.sniff_dma_active) return;
+
+  dma_channel_abort((uint)g_spi.sniff_dma_ch_mosi);
+  dma_channel_abort((uint)g_spi.sniff_dma_ch_miso);
+  wr_mosi = (uintptr_t)dma_hw->ch[g_spi.sniff_dma_ch_mosi].write_addr;
+  wr_miso = (uintptr_t)dma_hw->ch[g_spi.sniff_dma_ch_miso].write_addr;
+  base_mosi = (uintptr_t)g_spi.sniff_tx;
+  base_miso = (uintptr_t)g_spi.sniff_rx;
+  got_mosi = (wr_mosi > base_mosi) ? (uint32_t)(wr_mosi - base_mosi) : 0u;
+  got_miso = (wr_miso > base_miso) ? (uint32_t)(wr_miso - base_miso) : 0u;
+  if (got_mosi > SPI_MAX_SNIFF_BYTES) got_mosi = SPI_MAX_SNIFF_BYTES;
+  if (got_miso > SPI_MAX_SNIFF_BYTES) got_miso = SPI_MAX_SNIFF_BYTES;
+  got_min = got_mosi < got_miso ? got_mosi : got_miso;
+  g_spi.sniff_len = (uint16_t)got_min;
+
+  if (got_mosi != got_miso) {
+    g_spi.sniff_dropped_frame++;
+    g_spi.sniff_dropped_total++;
+  }
+  if (got_min >= SPI_MAX_SNIFF_BYTES) {
+    g_spi.sniff_dropped_frame++;
+    g_spi.sniff_dropped_total++;
+  }
+  g_spi.sniff_dma_active = false;
+}
+
+static void sniff_pio_arm(void) {
+  uint32_t mask;
+  if (!g_spi.sniff_pio_ready) return;
+  mask = (1u << g_spi.sniff_sm_mosi) | (1u << g_spi.sniff_sm_miso);
+  pio_set_sm_mask_enabled(g_spi.sniff_pio, mask, false);
+  pio_sm_clear_fifos(g_spi.sniff_pio, g_spi.sniff_sm_mosi);
+  pio_sm_clear_fifos(g_spi.sniff_pio, g_spi.sniff_sm_miso);
+  pio_sm_restart(g_spi.sniff_pio, g_spi.sniff_sm_mosi);
+  pio_sm_restart(g_spi.sniff_pio, g_spi.sniff_sm_miso);
+  // Start both SMs on the same cycle so MOSI/MISO sampling stays aligned.
+  pio_enable_sm_mask_in_sync(g_spi.sniff_pio, mask);
+}
+
+static void sniff_pio_stop(void) {
+  sniff_dma_stop();
+  if (!g_spi.sniff_pio_ready) return;
+  pio_sm_set_enabled(g_spi.sniff_pio, g_spi.sniff_sm_mosi, false);
+  pio_sm_set_enabled(g_spi.sniff_pio, g_spi.sniff_sm_miso, false);
+  pio_sm_clear_fifos(g_spi.sniff_pio, g_spi.sniff_sm_mosi);
+  pio_sm_clear_fifos(g_spi.sniff_pio, g_spi.sniff_sm_miso);
+  pio_sm_restart(g_spi.sniff_pio, g_spi.sniff_sm_mosi);
+  pio_sm_restart(g_spi.sniff_pio, g_spi.sniff_sm_miso);
+}
+
+static void sniff_pio_drain_pairs(void) {
+  while (!pio_sm_is_rx_fifo_empty(g_spi.sniff_pio, g_spi.sniff_sm_mosi) &&
+         !pio_sm_is_rx_fifo_empty(g_spi.sniff_pio, g_spi.sniff_sm_miso)) {
+    uint8_t tx = (uint8_t)pio_sm_get(g_spi.sniff_pio, g_spi.sniff_sm_mosi);
+    uint8_t rx = (uint8_t)pio_sm_get(g_spi.sniff_pio, g_spi.sniff_sm_miso);
+    if (g_spi.sniff_len < SPI_MAX_SNIFF_BYTES) {
+      g_spi.sniff_tx[g_spi.sniff_len] = tx;
+      g_spi.sniff_rx[g_spi.sniff_len] = rx;
+      g_spi.sniff_len++;
+    } else {
+      g_spi.sniff_dropped_frame++;
+      g_spi.sniff_dropped_total++;
+    }
+  }
+}
+
+static void sniff_pio_discard_unpaired(void) {
+  while (!pio_sm_is_rx_fifo_empty(g_spi.sniff_pio, g_spi.sniff_sm_mosi)) {
+    (void)pio_sm_get(g_spi.sniff_pio, g_spi.sniff_sm_mosi);
+    g_spi.sniff_dropped_frame++;
+    g_spi.sniff_dropped_total++;
+  }
+  while (!pio_sm_is_rx_fifo_empty(g_spi.sniff_pio, g_spi.sniff_sm_miso)) {
+    (void)pio_sm_get(g_spi.sniff_pio, g_spi.sniff_sm_miso);
+    g_spi.sniff_dropped_frame++;
+    g_spi.sniff_dropped_total++;
+  }
+}
+
 static void sniff_sample(void) {
-  // Passive SPI mode-0 sniffer: samples MOSI/MISO on rising CLK while CS is low.
   uint8_t cs = (uint8_t)gpio_get(SPI_CS_PIN);
-  uint8_t clk = (uint8_t)gpio_get(SPI_SCK_PIN);
+  uint64_t spin_until_us;
 
   if (cs == 0u && !g_spi.sniff_frame_active) {
     g_spi.sniff_frame_active = true;
     g_spi.sniff_len = 0;
     g_spi.sniff_dropped_frame = 0;
-    g_spi.sniff_cur_tx = 0;
-    g_spi.sniff_cur_rx = 0;
-    g_spi.sniff_bit_count = 0;
+    if (g_spi.sniff_dma_ready) sniff_dma_start_frame();
+  }
+
+  if (g_spi.sniff_frame_active && !g_spi.sniff_dma_ready) {
+    // In sniffer mode we can spend short bursts draining FIFOs to avoid
+    // overflow during high-speed transfers.
+    spin_until_us = time_us_64() + 1000u;
+    do {
+      sniff_pio_drain_pairs();
+      cs = (uint8_t)gpio_get(SPI_CS_PIN);
+      if (cs != 0u) break;
+      tight_loop_contents();
+    } while (time_us_64() < spin_until_us);
   }
 
   if (g_spi.sniff_frame_active && cs == 1u) {
-    if (g_spi.sniff_bit_count != 0u) {
-      if (g_spi.sniff_len < SPI_MAX_SNIFF_BYTES) {
-        g_spi.sniff_tx[g_spi.sniff_len] = (uint8_t)(g_spi.sniff_cur_tx << (8u - g_spi.sniff_bit_count));
-        g_spi.sniff_rx[g_spi.sniff_len] = (uint8_t)(g_spi.sniff_cur_rx << (8u - g_spi.sniff_bit_count));
-        g_spi.sniff_len++;
-      } else {
-        g_spi.sniff_dropped_frame++;
-        g_spi.sniff_dropped_total++;
-      }
+    if (g_spi.sniff_dma_ready) {
+      sniff_dma_finish_frame();
+    } else {
+      sniff_pio_drain_pairs();
+      sniff_pio_discard_unpaired();
     }
     sniff_emit_frame();
     g_spi.sniff_frame_active = false;
-    return;
+    // Re-arm while CS is high so next frame starts cleanly from bit 0.
+    sniff_pio_arm();
   }
 
-  if (!g_spi.sniff_frame_active) {
-    g_spi.sniff_prev_clk = clk;
-    return;
-  }
-
-  if (g_spi.sniff_prev_clk == 0u && clk == 1u) {
-    g_spi.sniff_cur_tx = (uint8_t)((g_spi.sniff_cur_tx << 1) | (gpio_get(SPI_MOSI_PIN) ? 1u : 0u));
-    g_spi.sniff_cur_rx = (uint8_t)((g_spi.sniff_cur_rx << 1) | (gpio_get(SPI_MISO_PIN) ? 1u : 0u));
-    g_spi.sniff_bit_count++;
-    if (g_spi.sniff_bit_count >= 8u) {
-      if (g_spi.sniff_len < SPI_MAX_SNIFF_BYTES) {
-        g_spi.sniff_tx[g_spi.sniff_len] = g_spi.sniff_cur_tx;
-        g_spi.sniff_rx[g_spi.sniff_len] = g_spi.sniff_cur_rx;
-        g_spi.sniff_len++;
-      } else {
-        g_spi.sniff_dropped_frame++;
-        g_spi.sniff_dropped_total++;
-      }
-      g_spi.sniff_cur_tx = 0;
-      g_spi.sniff_cur_rx = 0;
-      g_spi.sniff_bit_count = 0;
-    }
-  }
-  g_spi.sniff_prev_clk = clk;
+  g_spi.sniff_prev_cs = cs;
 }
 
 static void handle_set_io(const char *json) {
@@ -815,6 +1035,8 @@ static void handle_dump_start(const char *json, bool to_file) {
 
 void proto_spi_init(void) {
   uint32_t now = now_ms();
+  g_spi.sniff_dma_ch_mosi = -1;
+  g_spi.sniff_dma_ch_miso = -1;
   g_spi.last_detect_ms = now;
   g_spi.last_idpoll_ms = now;
   g_spi.last_dump_ms = now;
@@ -822,7 +1044,7 @@ void proto_spi_init(void) {
   g_spi.lv_miso = 0;
   g_spi.lv_cs = 1;
   g_spi.lv_clk = 0;
-  g_spi.sniff_prev_clk = 0;
+  g_spi.sniff_prev_cs = 1;
   spi_apply_safe_io();
 }
 
@@ -833,6 +1055,7 @@ void proto_spi_on_client_close(ws_conn_t *conn) {
   g_spi.sniffer_enabled = false;
   g_spi.idpoll_enabled = false;
   g_spi.dump_enabled = false;
+  sniff_pio_stop();
   spi_release_master();
 }
 
@@ -878,10 +1101,19 @@ bool proto_spi_handle_text(const char *type, const char *json) {
       spi_dbg(1, "sniffer start blocked (busy)");
       return true;
     }
+    if (!sniff_pio_init()) {
+      (void)app_send_text("{\"type\":\"error\",\"code\":\"SPI_SNIFFER_PIO_UNAVAILABLE\",\"msg\":\"sniffer PIO unavailable\"}");
+      spi_dbg(1, "sniffer start failed (pio unavailable)");
+      return true;
+    }
+    if (!sniff_dma_init() && app_debug_level() >= 1u) {
+      spi_dbg(1, "sniffer dma unavailable, using cpu fifo drain");
+    }
     g_spi.sniffer_enabled = true;
     g_spi.sniff_frame_active = false;
-    g_spi.sniff_prev_clk = (uint8_t)gpio_get(SPI_SCK_PIN);
+    g_spi.sniff_prev_cs = (uint8_t)gpio_get(SPI_CS_PIN);
     spi_enter_passive_mode();
+    sniff_pio_arm();
     spi_dbg(1, "sniffer started");
     send_spi_status("sniffer", "enabled");
     send_spi_state();
@@ -890,6 +1122,8 @@ bool proto_spi_handle_text(const char *type, const char *json) {
 
   if (strcmp(type, "spi.sniffer.stop") == 0) {
     g_spi.sniffer_enabled = false;
+    g_spi.sniff_frame_active = false;
+    sniff_pio_stop();
     spi_dbg(1, "sniffer stopped");
     send_spi_status("sniffer", "disabled");
     send_spi_state();
@@ -970,7 +1204,7 @@ bool proto_spi_handle_text(const char *type, const char *json) {
 void proto_spi_poll(void) {
   uint32_t now = now_ms();
 
-  if (g_spi.detect_enabled || g_spi.sniffer_enabled || (g_spi.idpoll_enabled && g_spi.idpoll_monitor_between)) {
+  if (g_spi.detect_enabled || (g_spi.idpoll_enabled && g_spi.idpoll_monitor_between)) {
     // Passive modes always release SPI peripheral ownership.
     if (g_spi.spi_active) spi_enter_passive_mode();
     poll_pin_levels_and_transitions();

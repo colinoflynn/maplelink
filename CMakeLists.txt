@@ -59,6 +59,7 @@ target_sources(picowebserverspi PUBLIC
   )
 
 pico_generate_pio_header(picowebserverspi ${CMAKE_CURRENT_LIST_DIR}/src/emmc_dat0_rx.pio)
+pico_generate_pio_header(picowebserverspi ${CMAKE_CURRENT_LIST_DIR}/src/spi_sniff_byte_rx.pio)
 
 if(BROWSERIO_XTERM_SOURCE STREQUAL "LOCAL")
   set(BROWSERIO_XTERM_JS_PRIMARY "/xterm.js")
