@@ -4,7 +4,13 @@ on:
   push:
     branches:
       - "**"
+    paths-ignore:
+      - "README.md"
+      - "**/*.md"
   pull_request:
+    paths-ignore:
+      - "README.md"
+      - "**/*.md"
   workflow_dispatch:
 
 permissions:
