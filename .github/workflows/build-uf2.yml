@@ -53,7 +53,7 @@ jobs:
           if [ -n "${{ matrix.variant.use_ecm }}" ]; then
             cmake -S . -B "build-${{ matrix.variant.suffix }}" -G Ninja \
               -DPICO_SDK_PATH="$HOME/pico-sdk" \
-              -DCMAKE_C_FLAGS="-DUSE_ECM=${{ matrix.variant.use_ecm }}"
+              -DBROWSERIO_USE_ECM="${{ matrix.variant.use_ecm }}"
           else
             cmake -S . -B "build-${{ matrix.variant.suffix }}" -G Ninja \
               -DPICO_SDK_PATH="$HOME/pico-sdk"

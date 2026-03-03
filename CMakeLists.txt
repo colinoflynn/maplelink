@@ -8,6 +8,7 @@ find_package(Python3 COMPONENTS Interpreter REQUIRED)
 
 set(BROWSERIO_XTERM_SOURCE "CDN" CACHE STRING "xterm.js source: CDN or LOCAL")
 set_property(CACHE BROWSERIO_XTERM_SOURCE PROPERTY STRINGS CDN LOCAL)
+set(BROWSERIO_USE_ECM "" CACHE STRING "Override USE_ECM in tusb_config.h (empty=auto, or 0/1)")
 
 pico_sdk_init()
 
@@ -168,6 +169,10 @@ target_sources(picowebserverspi PUBLIC
   )
 
 target_link_libraries(picowebserverspi PUBLIC pico_stdlib hardware_spi hardware_pio hardware_dma tinyusb_device tinyusb_board)
+
+if(NOT BROWSERIO_USE_ECM STREQUAL "")
+  target_compile_definitions(picowebserverspi PUBLIC USE_ECM=${BROWSERIO_USE_ECM})
+endif()
 
 # due to warnings from other net source, we need to prevent error from some of the warnings options
 #if (CMAKE_C_COMPILER_ID STREQUAL "GNU")
