@@ -34,9 +34,28 @@
 #define SPI_DUMP_VERIFY_MAX_BYTES 128u
 #define SPI_DUMP_TX_FAIL_LIMIT 40u
 #define SPI_RAW_MAX_BYTES 256u
+#define SPI_PIN2PWN_MIN_EDGES 1u
+#define SPI_PIN2PWN_MAX_EDGES 100000u
+#define SPI_PIN2PWN_MAX_WAIT_MS 5000u
+#define SPI_PIN2PWN_MIN_DRIVE_MS 10u
+#define SPI_PIN2PWN_MAX_DRIVE_MS 10000u
+#define SPI_PIN2PWN_DEFAULT_DRIVE_MS 1000u
 #define WS_BIN_MAGIC 0xB0u
 #define WS_CH_SPI_DUMP_DATA 0x02u
 #define WS_CH_SPI_DUMP_FF 0x03u
+
+typedef enum {
+  SPI_PIN2PWN_PIN_CLK = 0,
+  SPI_PIN2PWN_PIN_CS = 1,
+  SPI_PIN2PWN_PIN_MOSI = 2,
+  SPI_PIN2PWN_PIN_MISO = 3
+} spi_pin2pwn_pin_t;
+
+typedef enum {
+  SPI_PIN2PWN_PHASE_IDLE = 0,
+  SPI_PIN2PWN_PHASE_WAIT = 1,
+  SPI_PIN2PWN_PHASE_DRIVE = 2
+} spi_pin2pwn_phase_t;
 
 typedef struct {
   bool tristate_default;
@@ -92,6 +111,20 @@ typedef struct {
   uint32_t sniff_dropped_total;
   uint8_t sniff_tx[SPI_MAX_SNIFF_BYTES];
   uint8_t sniff_rx[SPI_MAX_SNIFF_BYTES];
+  bool pin2pwn_enabled;
+  bool pin2pwn_armed;
+  bool pin2pwn_triggered;
+  bool pin2pwn_irq_enabled;
+  uint8_t pin2pwn_trigger_pin;
+  uint32_t pin2pwn_min_edges;
+  uint32_t pin2pwn_wait_ms;
+  uint32_t pin2pwn_drive_ms;
+  uint32_t pin2pwn_edge_count;
+  uint64_t pin2pwn_wait_deadline_us;
+  uint64_t pin2pwn_drive_deadline_us;
+  uint8_t pin2pwn_phase;
+  bool pin2pwn_wait_reported;
+  char pin2pwn_detail[96];
   uint8_t dump_buf[SPI_MAX_DUMP_CHUNK];
   uint8_t dump_chk[SPI_MAX_DUMP_CHUNK];
 } spi_state_t;
@@ -116,6 +149,19 @@ static spi_state_t g_spi = {
     .dump_total_bytes = 0,
     .dump_chunk_bytes = 256,
     .dump_sent_bytes = 0,
+    .pin2pwn_enabled = false,
+    .pin2pwn_armed = false,
+    .pin2pwn_triggered = false,
+    .pin2pwn_irq_enabled = false,
+    .pin2pwn_trigger_pin = SPI_PIN2PWN_PIN_CLK,
+    .pin2pwn_min_edges = 2u,
+    .pin2pwn_wait_ms = 0u,
+    .pin2pwn_drive_ms = SPI_PIN2PWN_DEFAULT_DRIVE_MS,
+    .pin2pwn_edge_count = 0u,
+    .pin2pwn_wait_deadline_us = 0u,
+    .pin2pwn_drive_deadline_us = 0u,
+    .pin2pwn_phase = SPI_PIN2PWN_PHASE_IDLE,
+    .pin2pwn_wait_reported = false,
 };
 
 static bool starts_with(const char *s, const char *prefix) {
@@ -156,6 +202,150 @@ static uint32_t clamp_u32(uint32_t v, uint32_t lo, uint32_t hi) {
   if (v < lo) return lo;
   if (v > hi) return hi;
   return v;
+}
+
+static void spi_apply_safe_io(void);
+static void spi_enter_passive_mode(void);
+
+static uint spi_pin2pwn_gpio(uint8_t trigger_pin) {
+  switch (trigger_pin) {
+    case SPI_PIN2PWN_PIN_CLK: return SPI_SCK_PIN;
+    case SPI_PIN2PWN_PIN_CS: return SPI_CS_PIN;
+    case SPI_PIN2PWN_PIN_MOSI: return SPI_MOSI_PIN;
+    case SPI_PIN2PWN_PIN_MISO: return SPI_MISO_PIN;
+    default: return SPI_SCK_PIN;
+  }
+}
+
+static const char *spi_pin2pwn_pin_name(uint8_t trigger_pin) {
+  switch (trigger_pin) {
+    case SPI_PIN2PWN_PIN_CLK: return "clk";
+    case SPI_PIN2PWN_PIN_CS: return "cs";
+    case SPI_PIN2PWN_PIN_MOSI: return "mosi";
+    case SPI_PIN2PWN_PIN_MISO: return "miso";
+    default: return "clk";
+  }
+}
+
+static const char *spi_pin2pwn_state_name(void) {
+  if (!g_spi.pin2pwn_enabled) return "disabled";
+  if (g_spi.pin2pwn_triggered || g_spi.pin2pwn_phase != SPI_PIN2PWN_PHASE_IDLE) return "triggered";
+  if (g_spi.pin2pwn_armed) return "armed";
+  return "enabled";
+}
+
+static void spi_pin2pwn_send_status(void) {
+  char out[384];
+  const char *detail = g_spi.pin2pwn_detail[0] ? g_spi.pin2pwn_detail : "";
+  snprintf(out, sizeof(out),
+           "{\"type\":\"spi.pin2pwn.status\",\"state\":\"%s\",\"enabled\":%s,\"armed\":%s,"
+           "\"triggered\":%s,\"trigger_pin\":\"%s\",\"min_edges\":%lu,\"edge_count\":%lu,"
+           "\"wait_ms\":%lu,\"drive_ms\":%lu,\"detail\":\"%s\"}",
+           spi_pin2pwn_state_name(),
+           g_spi.pin2pwn_enabled ? "true" : "false",
+           g_spi.pin2pwn_armed ? "true" : "false",
+           g_spi.pin2pwn_triggered ? "true" : "false",
+           spi_pin2pwn_pin_name(g_spi.pin2pwn_trigger_pin),
+           (unsigned long)g_spi.pin2pwn_min_edges,
+           (unsigned long)g_spi.pin2pwn_edge_count,
+           (unsigned long)g_spi.pin2pwn_wait_ms,
+           (unsigned long)g_spi.pin2pwn_drive_ms,
+           detail);
+  (void)app_send_text(out);
+}
+
+static void spi_pin2pwn_set_detail(const char *msg) {
+  if (!msg) {
+    g_spi.pin2pwn_detail[0] = 0;
+    return;
+  }
+  snprintf(g_spi.pin2pwn_detail, sizeof(g_spi.pin2pwn_detail), "%s", msg);
+}
+
+static void spi_pin2pwn_release_irq(void) {
+  if (!g_spi.pin2pwn_irq_enabled) return;
+  gpio_set_irq_enabled(spi_pin2pwn_gpio(g_spi.pin2pwn_trigger_pin),
+                       GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL, false);
+  g_spi.pin2pwn_irq_enabled = false;
+}
+
+static void spi_pin2pwn_apply_drive_low(void) {
+  gpio_init(SPI_MOSI_PIN);
+  gpio_init(SPI_MISO_PIN);
+  gpio_init(SPI_CS_PIN);
+  gpio_init(SPI_SCK_PIN);
+  gpio_set_dir(SPI_MOSI_PIN, GPIO_OUT);
+  gpio_set_dir(SPI_MISO_PIN, GPIO_OUT);
+  gpio_set_dir(SPI_CS_PIN, GPIO_OUT);
+  gpio_set_dir(SPI_SCK_PIN, GPIO_OUT);
+  gpio_put(SPI_MOSI_PIN, 0u);
+  gpio_put(SPI_MISO_PIN, 0u);
+  gpio_put(SPI_CS_PIN, 0u);
+  gpio_put(SPI_SCK_PIN, 0u);
+}
+
+static void spi_pin2pwn_disarm(const char *detail) {
+  g_spi.pin2pwn_armed = false;
+  g_spi.pin2pwn_triggered = false;
+  g_spi.pin2pwn_phase = SPI_PIN2PWN_PHASE_IDLE;
+  g_spi.pin2pwn_wait_deadline_us = 0u;
+  g_spi.pin2pwn_drive_deadline_us = 0u;
+  g_spi.pin2pwn_wait_reported = false;
+  g_spi.pin2pwn_edge_count = 0u;
+  spi_pin2pwn_release_irq();
+  spi_apply_safe_io();
+  spi_pin2pwn_set_detail(detail);
+}
+
+static void spi_pin2pwn_disable(const char *detail) {
+  g_spi.pin2pwn_enabled = false;
+  spi_pin2pwn_disarm(detail ? detail : "disabled");
+}
+
+static void spi_pin2pwn_irq_cb(uint gpio, uint32_t events) {
+  uint trig_gpio = spi_pin2pwn_gpio(g_spi.pin2pwn_trigger_pin);
+  if (!g_spi.pin2pwn_enabled || !g_spi.pin2pwn_armed) return;
+  if (gpio != trig_gpio) return;
+  if ((events & (GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL)) == 0u) return;
+
+  g_spi.pin2pwn_edge_count++;
+  if (g_spi.pin2pwn_edge_count < g_spi.pin2pwn_min_edges) return;
+
+  g_spi.pin2pwn_armed = false;
+  g_spi.pin2pwn_triggered = true;
+  g_spi.pin2pwn_phase = SPI_PIN2PWN_PHASE_WAIT;
+  g_spi.pin2pwn_wait_reported = false;
+  g_spi.pin2pwn_wait_deadline_us = time_us_64() + ((uint64_t)g_spi.pin2pwn_wait_ms * 1000ull);
+  spi_pin2pwn_release_irq();
+}
+
+static bool spi_pin2pwn_arm(const char **reason) {
+  uint trig_gpio;
+  if (!g_spi.pin2pwn_enabled) {
+    if (reason) *reason = "module not enabled";
+    return false;
+  }
+  if (g_spi.dump_enabled || g_spi.idpoll_enabled || g_spi.detect_enabled || g_spi.sniffer_enabled) {
+    if (reason) *reason = "busy with other spi feature";
+    return false;
+  }
+
+  spi_enter_passive_mode();
+  spi_apply_safe_io();
+  trig_gpio = spi_pin2pwn_gpio(g_spi.pin2pwn_trigger_pin);
+  g_spi.pin2pwn_edge_count = 0u;
+  g_spi.pin2pwn_triggered = false;
+  g_spi.pin2pwn_phase = SPI_PIN2PWN_PHASE_IDLE;
+  g_spi.pin2pwn_wait_reported = false;
+  g_spi.pin2pwn_wait_deadline_us = 0u;
+  g_spi.pin2pwn_drive_deadline_us = 0u;
+
+  gpio_set_irq_enabled_with_callback(trig_gpio, GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL,
+                                     true, &spi_pin2pwn_irq_cb);
+  g_spi.pin2pwn_irq_enabled = true;
+  g_spi.pin2pwn_armed = true;
+  spi_pin2pwn_set_detail("armed");
+  return true;
 }
 
 static void sniff_pio_stop(void);
@@ -378,6 +568,10 @@ static void handle_status_read(const char *json) {
   uint8_t sr3;
   char out[480];
 
+  if (g_spi.pin2pwn_enabled || g_spi.pin2pwn_armed || g_spi.pin2pwn_triggered) {
+    spi_pin2pwn_disable("disabled by status read");
+    spi_pin2pwn_send_status();
+  }
   if (g_spi.dump_enabled || g_spi.sniffer_enabled) {
     (void)app_send_text("{\"type\":\"error\",\"code\":\"SPI_BUSY\",\"msg\":\"status read blocked while dump/sniffer active\"}");
     return;
@@ -426,6 +620,10 @@ static void handle_raw_txrx(const char *json) {
   uint32_t total;
   bool ok;
 
+  if (g_spi.pin2pwn_enabled || g_spi.pin2pwn_armed || g_spi.pin2pwn_triggered) {
+    spi_pin2pwn_disable("disabled by raw txrx");
+    spi_pin2pwn_send_status();
+  }
   if (g_spi.dump_enabled || g_spi.idpoll_enabled || g_spi.sniffer_enabled) {
     (void)app_send_text("{\"type\":\"error\",\"code\":\"SPI_BUSY\",\"msg\":\"raw txrx blocked while dump/idpoll/sniffer active\"}");
     return;
@@ -501,6 +699,10 @@ static void handle_sfdp_read(const char *json) {
     if (req_len > 256u) req_len = 256u;
   }
 
+  if (g_spi.pin2pwn_enabled || g_spi.pin2pwn_armed || g_spi.pin2pwn_triggered) {
+    spi_pin2pwn_disable("disabled by sfdp read");
+    spi_pin2pwn_send_status();
+  }
   if (g_spi.dump_enabled || g_spi.sniffer_enabled) {
     (void)app_send_text("{\"type\":\"error\",\"code\":\"SPI_BUSY\",\"msg\":\"sfdp read blocked while dump/sniffer active\"}");
     return;
@@ -603,7 +805,7 @@ static void handle_sfdp_read(const char *json) {
 }
 
 static void send_spi_state(void) {
-  char out[768];
+  char out[1200];
   snprintf(out, sizeof(out),
            "{\"type\":\"spi.config\",\"port\":\"" SPI_PORT_NAME "\",\"status\":\"hw\","
            "\"pins\":{\"mosi\":%u,\"miso\":%u,\"cs\":%u,\"clk\":%u},"
@@ -611,7 +813,9 @@ static void send_spi_state(void) {
            "\"speed_hz\":%lu,\"idpoll_interval_ms\":%lu,"
            "\"detect_enabled\":%s,\"sniffer_enabled\":%s,\"idpoll_enabled\":%s,\"idpoll_monitor_between\":%s,\"dump_enabled\":%s,"
            "\"dump\":{\"addr_bytes\":%u,\"read_cmd\":%u,\"double_read\":%s,\"verify_retries\":%u,"
-           "\"ff_opt\":%s,\"start_addr\":%lu,\"to_file\":%s}}",
+           "\"ff_opt\":%s,\"start_addr\":%lu,\"to_file\":%s},"
+           "\"pin2pwn\":{\"enabled\":%s,\"armed\":%s,\"triggered\":%s,\"state\":\"%s\","
+           "\"trigger_pin\":\"%s\",\"min_edges\":%lu,\"wait_ms\":%lu,\"drive_ms\":%lu}}",
            (unsigned)SPI_MOSI_PIN, (unsigned)SPI_MISO_PIN, (unsigned)SPI_CS_PIN, (unsigned)SPI_SCK_PIN,
            g_spi.tristate_default ? "true" : "false", g_spi.pullups_enabled ? "true" : "false",
            (unsigned long)g_spi.speed_hz,
@@ -621,7 +825,15 @@ static void send_spi_state(void) {
            g_spi.dump_enabled ? "true" : "false", g_spi.dump_addr_bytes, g_spi.dump_read_cmd,
            g_spi.dump_double_read ? "true" : "false", g_spi.dump_verify_retries,
            g_spi.dump_ff_opt ? "true" : "false", (unsigned long)g_spi.dump_start_addr,
-           g_spi.dump_to_file ? "true" : "false");
+           g_spi.dump_to_file ? "true" : "false",
+           g_spi.pin2pwn_enabled ? "true" : "false",
+           g_spi.pin2pwn_armed ? "true" : "false",
+           g_spi.pin2pwn_triggered ? "true" : "false",
+           spi_pin2pwn_state_name(),
+           spi_pin2pwn_pin_name(g_spi.pin2pwn_trigger_pin),
+           (unsigned long)g_spi.pin2pwn_min_edges,
+           (unsigned long)g_spi.pin2pwn_wait_ms,
+           (unsigned long)g_spi.pin2pwn_drive_ms);
   (void)app_send_text(out);
 }
 
@@ -636,6 +848,12 @@ static void ensure_safe_exclusion(void) {
   if (g_spi.dump_enabled || g_spi.idpoll_enabled) {
     g_spi.sniffer_enabled = false;
     sniff_pio_stop();
+  }
+  if (g_spi.dump_enabled || g_spi.idpoll_enabled || g_spi.sniffer_enabled || g_spi.detect_enabled) {
+    if (g_spi.pin2pwn_enabled || g_spi.pin2pwn_armed || g_spi.pin2pwn_triggered) {
+      spi_pin2pwn_disable("disabled by spi activity");
+      spi_pin2pwn_send_status();
+    }
   }
 }
 
@@ -981,12 +1199,71 @@ static void handle_set_speed(const char *json) {
   send_spi_state();
 }
 
+static void handle_pin2pwn_config(const char *json) {
+  uint32_t v;
+  bool b;
+  char pin_txt[16];
+
+  if (json_extract_bool(json, "enabled", &b)) g_spi.pin2pwn_enabled = b;
+  if (json_extract_u32(json, "min_edges", &v)) g_spi.pin2pwn_min_edges = clamp_u32(v, SPI_PIN2PWN_MIN_EDGES, SPI_PIN2PWN_MAX_EDGES);
+  if (json_extract_u32(json, "wait_ms", &v)) g_spi.pin2pwn_wait_ms = clamp_u32(v, 0u, SPI_PIN2PWN_MAX_WAIT_MS);
+  if (json_extract_u32(json, "drive_ms", &v)) g_spi.pin2pwn_drive_ms = clamp_u32(v, SPI_PIN2PWN_MIN_DRIVE_MS, SPI_PIN2PWN_MAX_DRIVE_MS);
+  if (json_extract_string(json, "trigger_pin", pin_txt, sizeof(pin_txt))) {
+    if (strcmp(pin_txt, "clk") == 0) g_spi.pin2pwn_trigger_pin = SPI_PIN2PWN_PIN_CLK;
+    else if (strcmp(pin_txt, "cs") == 0) g_spi.pin2pwn_trigger_pin = SPI_PIN2PWN_PIN_CS;
+    else if (strcmp(pin_txt, "mosi") == 0) g_spi.pin2pwn_trigger_pin = SPI_PIN2PWN_PIN_MOSI;
+    else if (strcmp(pin_txt, "miso") == 0) g_spi.pin2pwn_trigger_pin = SPI_PIN2PWN_PIN_MISO;
+  } else if (json_extract_u32(json, "trigger_pin_index", &v)) {
+    g_spi.pin2pwn_trigger_pin = (uint8_t)clamp_u32(v, SPI_PIN2PWN_PIN_CLK, SPI_PIN2PWN_PIN_MISO);
+  }
+
+  if (!g_spi.pin2pwn_enabled) {
+    spi_pin2pwn_disable("disabled");
+  } else {
+    spi_pin2pwn_disarm("enabled");
+    g_spi.pin2pwn_enabled = true;
+  }
+  send_spi_state();
+  spi_pin2pwn_send_status();
+}
+
+static void handle_pin2pwn_arm(void) {
+  const char *why = NULL;
+  if (!spi_pin2pwn_arm(&why)) {
+    char msg[160];
+    snprintf(msg, sizeof(msg),
+             "{\"type\":\"error\",\"code\":\"SPI_PIN2PWN_ARM_FAILED\",\"msg\":\"%s\"}",
+             why ? why : "cannot arm");
+    (void)app_send_text(msg);
+    spi_pin2pwn_set_detail(why ? why : "arm failed");
+    spi_pin2pwn_send_status();
+    return;
+  }
+  send_spi_state();
+  spi_pin2pwn_send_status();
+}
+
+static void handle_pin2pwn_disarm(void) {
+  if (!g_spi.pin2pwn_enabled) {
+    spi_pin2pwn_disable("disabled");
+  } else {
+    spi_pin2pwn_disarm("enabled");
+    g_spi.pin2pwn_enabled = true;
+  }
+  send_spi_state();
+  spi_pin2pwn_send_status();
+}
+
 static void handle_dump_start(const char *json, bool to_file) {
   uint32_t v;
   uint64_t max_bytes;
   uint64_t span;
   bool b;
 
+  if (g_spi.pin2pwn_enabled || g_spi.pin2pwn_armed || g_spi.pin2pwn_triggered) {
+    spi_pin2pwn_disable("disabled by dump/display");
+    spi_pin2pwn_send_status();
+  }
   if (json_extract_u32(json, "addr_bytes", &v)) g_spi.dump_addr_bytes = (uint8_t)v;
   if (json_extract_u32(json, "read_cmd", &v)) g_spi.dump_read_cmd = (uint8_t)v;
   if (json_extract_u32(json, "length_bytes", &v)) g_spi.dump_total_bytes = v;
@@ -1044,6 +1321,7 @@ void proto_spi_init(void) {
   g_spi.lv_miso = 0;
   g_spi.lv_cs = 1;
   g_spi.lv_clk = 0;
+  g_spi.pin2pwn_detail[0] = 0;
   g_spi.sniff_prev_cs = 1;
   spi_apply_safe_io();
 }
@@ -1055,6 +1333,7 @@ void proto_spi_on_client_close(ws_conn_t *conn) {
   g_spi.sniffer_enabled = false;
   g_spi.idpoll_enabled = false;
   g_spi.dump_enabled = false;
+  spi_pin2pwn_disable("disabled");
   sniff_pio_stop();
   spi_release_master();
 }
@@ -1078,7 +1357,26 @@ bool proto_spi_handle_text(const char *type, const char *json) {
     return true;
   }
 
+  if (strcmp(type, "spi.pin2pwn.config") == 0) {
+    handle_pin2pwn_config(json);
+    return true;
+  }
+
+  if (strcmp(type, "spi.pin2pwn.arm") == 0) {
+    handle_pin2pwn_arm();
+    return true;
+  }
+
+  if (strcmp(type, "spi.pin2pwn.disarm") == 0) {
+    handle_pin2pwn_disarm();
+    return true;
+  }
+
   if (strcmp(type, "spi.detect.start") == 0) {
+    if (g_spi.pin2pwn_enabled || g_spi.pin2pwn_armed || g_spi.pin2pwn_triggered) {
+      spi_pin2pwn_disable("disabled by pin detect");
+      spi_pin2pwn_send_status();
+    }
     g_spi.detect_enabled = true;
     spi_enter_passive_mode();
     spi_dbg(1, "detect started");
@@ -1109,6 +1407,10 @@ bool proto_spi_handle_text(const char *type, const char *json) {
     if (!sniff_dma_init() && app_debug_level() >= 1u) {
       spi_dbg(1, "sniffer dma unavailable, using cpu fifo drain");
     }
+    if (g_spi.pin2pwn_enabled || g_spi.pin2pwn_armed || g_spi.pin2pwn_triggered) {
+      spi_pin2pwn_disable("disabled by sniffer");
+      spi_pin2pwn_send_status();
+    }
     g_spi.sniffer_enabled = true;
     g_spi.sniff_frame_active = false;
     g_spi.sniff_prev_cs = (uint8_t)gpio_get(SPI_CS_PIN);
@@ -1136,6 +1438,10 @@ bool proto_spi_handle_text(const char *type, const char *json) {
     if (json_extract_u32(json, "interval_ms", &v)) g_spi.idpoll_interval_ms = clamp_u32(v, SPI_MIN_IDPOLL_MS, SPI_MAX_IDPOLL_MS);
     if (json_extract_u32(json, "speed_hz", &v)) g_spi.speed_hz = clamp_u32(v, SPI_MIN_SPEED_HZ, SPI_MAX_SPEED_HZ);
     if (json_extract_bool(json, "monitor_between", &b)) g_spi.idpoll_monitor_between = b;
+    if (g_spi.pin2pwn_enabled || g_spi.pin2pwn_armed || g_spi.pin2pwn_triggered) {
+      spi_pin2pwn_disable("disabled by id poll");
+      spi_pin2pwn_send_status();
+    }
     g_spi.idpoll_enabled = true;
     g_spi.dump_enabled = false;
     ensure_safe_exclusion();
@@ -1203,6 +1509,37 @@ bool proto_spi_handle_text(const char *type, const char *json) {
 
 void proto_spi_poll(void) {
   uint32_t now = now_ms();
+  uint64_t now_us = time_us_64();
+
+  if (g_spi.pin2pwn_enabled && g_spi.pin2pwn_phase == SPI_PIN2PWN_PHASE_WAIT &&
+      !g_spi.pin2pwn_wait_reported) {
+    spi_pin2pwn_set_detail("trigger detected: waiting");
+    g_spi.pin2pwn_wait_reported = true;
+    spi_pin2pwn_send_status();
+    send_spi_state();
+  }
+
+  if (g_spi.pin2pwn_enabled && g_spi.pin2pwn_phase == SPI_PIN2PWN_PHASE_WAIT &&
+      now_us >= g_spi.pin2pwn_wait_deadline_us) {
+    spi_pin2pwn_set_detail("triggered: driving low");
+    spi_pin2pwn_apply_drive_low();
+    g_spi.pin2pwn_phase = SPI_PIN2PWN_PHASE_DRIVE;
+    g_spi.pin2pwn_drive_deadline_us = now_us + ((uint64_t)g_spi.pin2pwn_drive_ms * 1000ull);
+    g_spi.pin2pwn_triggered = true;
+    spi_pin2pwn_send_status();
+    send_spi_state();
+  }
+
+  if (g_spi.pin2pwn_enabled && g_spi.pin2pwn_phase == SPI_PIN2PWN_PHASE_DRIVE &&
+      now_us >= g_spi.pin2pwn_drive_deadline_us) {
+    spi_apply_safe_io();
+    g_spi.pin2pwn_phase = SPI_PIN2PWN_PHASE_IDLE;
+    g_spi.pin2pwn_triggered = false;
+    g_spi.pin2pwn_edge_count = 0u;
+    spi_pin2pwn_set_detail("enabled");
+    spi_pin2pwn_send_status();
+    send_spi_state();
+  }
 
   if (g_spi.detect_enabled || (g_spi.idpoll_enabled && g_spi.idpoll_monitor_between)) {
     // Passive modes always release SPI peripheral ownership.

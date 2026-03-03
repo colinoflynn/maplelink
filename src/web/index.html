@@ -296,6 +296,13 @@
     <button id="clear">Clear Terminal Output</button>
     <span class="dim">Tip: click terminal pane to type</span>
   </div>
+  <div class="bar">
+    <span class="dim">PIN2PWN:</span>
+    <span id="pin2pwntermstatus" class="livepill live-off">DISABLED</span>
+    <button id="pin2pwntermarm">Arm</button>
+    <button id="pin2pwntermdisarm">Disarm</button>
+    <span id="pin2pwntermdetail" class="dim">not enabled</span>
+  </div>
 
   <div id="shell">
     <div id="term" class="pane" tabindex="0"></div>
@@ -493,6 +500,29 @@
         <div class="dumprate" id="spiverifystat">Verify: off</div>
         <progress id="spidumpprogress" class="prog" value="0" max="100"></progress>
         <div id="spilasthex">last dump bytes will appear here</div>
+      </div>
+    </div>
+    <div class="group">
+      <div class="gtitle">PIN2PWN</div>
+      <div class="grow">
+        <label><input id="pin2pwnenable" type="checkbox">Enable</label>
+        <label>Trigger pin <select id="pin2pwnpin">
+          <option value="clk" selected>CLK</option>
+          <option value="cs">CS</option>
+          <option value="mosi">MOSI</option>
+          <option value="miso">MISO</option>
+        </select></label>
+        <label>Min transitions <input id="pin2pwnedges" type="number" min="1" max="100000" step="1" value="2"></label>
+        <label>Wait ms <input id="pin2pwnwait" type="number" min="0" max="5000" step="1" value="0"></label>
+        <label>Drive low ms <input id="pin2pwndrive" type="number" min="10" max="10000" step="10" value="1000"></label>
+      </div>
+      <div class="grow">
+        <button id="pin2pwnapply">Apply PIN2PWN Config</button>
+        <button id="pin2pwnarm">Arm</button>
+        <button id="pin2pwndisarm">Disarm</button>
+        <span class="dim">Status:</span>
+        <span id="pin2pwnstatus" class="livepill live-off">DISABLED</span>
+        <span id="pin2pwndetail" class="dim">not enabled</span>
       </div>
     </div>
     <div class="bar" id="spidump">dump: idle</div>
@@ -809,6 +839,20 @@
     const spiDumpFf=document.getElementById('spidumpff');
     const spiDumpDlBtn=document.getElementById('spidumpdlbtn');
     const spiDumpFileMeta=document.getElementById('spidumpfilemeta');
+    const pin2pwnEnable=document.getElementById('pin2pwnenable');
+    const pin2pwnPin=document.getElementById('pin2pwnpin');
+    const pin2pwnEdges=document.getElementById('pin2pwnedges');
+    const pin2pwnWait=document.getElementById('pin2pwnwait');
+    const pin2pwnDrive=document.getElementById('pin2pwndrive');
+    const pin2pwnApplyBtn=document.getElementById('pin2pwnapply');
+    const pin2pwnArmBtn=document.getElementById('pin2pwnarm');
+    const pin2pwnDisarmBtn=document.getElementById('pin2pwndisarm');
+    const pin2pwnStatus=document.getElementById('pin2pwnstatus');
+    const pin2pwnDetail=document.getElementById('pin2pwndetail');
+    const pin2pwnTermStatus=document.getElementById('pin2pwntermstatus');
+    const pin2pwnTermArmBtn=document.getElementById('pin2pwntermarm');
+    const pin2pwnTermDisarmBtn=document.getElementById('pin2pwntermdisarm');
+    const pin2pwnTermDetail=document.getElementById('pin2pwntermdetail');
     const spiPins=document.getElementById('spipins');
     const spiDump=document.getElementById('spidump');
     const spiSt=document.getElementById('spist');
@@ -1392,6 +1436,24 @@
     function parseHexBytesLoose(s){const out=[];if(!s)return out;const toks=String(s).trim().split(/[\s,]+/).filter(Boolean);for(const t0 of toks){let t=t0.toLowerCase();if(t.startsWith('0x'))t=t.slice(2);if(!/^[0-9a-f]{1,2}$/.test(t))continue;out.push(parseInt(t,16));}return out;}
     function updateReadRanges(){const start=parseHexU32(spiStartAddr.value,0);const dl=Math.max(1,parseNum(spiDispLen.value,1));const fl=Math.max(1,parseNum(spiDumpLen.value,1));spiDispRange.textContent=hex32(start)+' : '+hex32((start+dl-1)>>>0);spiDumpRange.textContent=hex32(start)+' : '+hex32((start+fl-1)>>>0);}
     function resetSnifferUi(){sniffFrames=0;sniffBytes=0;sniffDropped=0;sniffOverflow=false;sniffOffset=0;sniffLines=[];sniffFramesEl.textContent='0';sniffBytesEl.textContent='0';sniffDropEl.textContent='0';sniffOfEl.textContent='no';sniffView.textContent='sniffer frames will appear here (TX and RX columns)';setSnifferLive(false);}
+    function pin2pwnPillClass(state){
+      const s=String(state||'').toLowerCase();
+      return (s==='armed'||s==='triggered'||s==='enabled')?'livepill live-on':'livepill live-off';
+    }
+    function renderPin2pwnStatus(m){
+      const state=String((m&&m.state)||'disabled').toUpperCase();
+      const detail=String((m&&m.detail)||'').trim();
+      if(pin2pwnStatus){
+        pin2pwnStatus.textContent=state;
+        pin2pwnStatus.className=pin2pwnPillClass(state);
+      }
+      if(pin2pwnTermStatus){
+        pin2pwnTermStatus.textContent=state;
+        pin2pwnTermStatus.className=pin2pwnPillClass(state);
+      }
+      if(pin2pwnDetail)pin2pwnDetail.textContent=detail||'--';
+      if(pin2pwnTermDetail)pin2pwnTermDetail.textContent=detail||'--';
+    }
     function appendSnifferFrame(m){
       const tx=parseHexBytesLoose(m.tx_hex||'');
       const rx=parseHexBytesLoose(m.rx_hex||'');
@@ -2021,6 +2083,14 @@
         if(m.dump&&typeof m.dump.ff_opt==='boolean')spiDumpFf.checked=m.dump.ff_opt;
         if(m.dump&&typeof m.dump.start_addr==='number')spiStartAddr.value=hex32(m.dump.start_addr);
         if(typeof m.sniffer_enabled==='boolean')setSnifferLive(m.sniffer_enabled);
+        if(m.pin2pwn){
+          if(typeof m.pin2pwn.enabled==='boolean' && pin2pwnEnable)pin2pwnEnable.checked=!!m.pin2pwn.enabled;
+          if(typeof m.pin2pwn.trigger_pin==='string' && pin2pwnPin)pin2pwnPin.value=String(m.pin2pwn.trigger_pin);
+          if(typeof m.pin2pwn.min_edges==='number' && pin2pwnEdges)pin2pwnEdges.value=String(m.pin2pwn.min_edges);
+          if(typeof m.pin2pwn.wait_ms==='number' && pin2pwnWait)pin2pwnWait.value=String(m.pin2pwn.wait_ms);
+          if(typeof m.pin2pwn.drive_ms==='number' && pin2pwnDrive)pin2pwnDrive.value=String(m.pin2pwn.drive_ms);
+          renderPin2pwnStatus({state:m.pin2pwn.state||'disabled',detail:''});
+        }
         if(m.pins){if(typeof m.pins.mosi==='number')setMap(mapMosi,m.pins.mosi,'');if(typeof m.pins.miso==='number')setMap(mapMiso,m.pins.miso,'');if(typeof m.pins.cs==='number')setMap(mapCs,m.pins.cs,'');if(typeof m.pins.clk==='number')setMap(mapClk,m.pins.clk,'');}
         spiDumpStartAddr=parseHexU32(spiStartAddr.value,0)>>>0;
         updateReadRanges();
@@ -2137,6 +2207,11 @@
         return true;
       }
       if(m.type==='spi.sniffer.frame'){appendSnifferFrame(m);return true;}
+      if(m.type==='spi.pin2pwn.status'){
+        renderPin2pwnStatus(m);
+        spiLog('[spi.pin2pwn] '+JSON.stringify(m),'dim');
+        return true;
+      }
       if(m.type==='spi.dump.chunk'){
         const count=parseNum(m.count,0);
         if((m.offset||0)+count>dumpExpectedBytes)dumpExpectedBytes=(m.offset||0)+count;
@@ -2504,6 +2579,17 @@
     spiApplyIoBtn.onclick=()=>spiSend('spi.set_io',{tristate_default:spiTriState.checked,pullups_enabled:spiPullups.checked});
     spiSetSpeedBtn.onclick=()=>spiSend('spi.set_speed',{speed_hz:parseNum(spiSpeed.value,1000000),idpoll_interval_ms:parseNum(spiIdInt.value,250)});
     spiSetSpeedRawBtn.onclick=()=>spiSend('spi.set_speed',{speed_hz:parseNum(spiSpeedRaw.value,1000000),idpoll_interval_ms:parseNum(spiIdInt.value,250)});
+    if(pin2pwnApplyBtn)pin2pwnApplyBtn.onclick=()=>spiSend('spi.pin2pwn.config',{
+      enabled:!!(pin2pwnEnable&&pin2pwnEnable.checked),
+      trigger_pin:String((pin2pwnPin&&pin2pwnPin.value)||'clk'),
+      min_edges:Math.max(1,Math.min(100000,parseNum(pin2pwnEdges&&pin2pwnEdges.value,2))),
+      wait_ms:Math.max(0,Math.min(5000,parseNum(pin2pwnWait&&pin2pwnWait.value,0))),
+      drive_ms:Math.max(10,Math.min(10000,parseNum(pin2pwnDrive&&pin2pwnDrive.value,1000)))
+    });
+    if(pin2pwnArmBtn)pin2pwnArmBtn.onclick=()=>spiSend('spi.pin2pwn.arm');
+    if(pin2pwnDisarmBtn)pin2pwnDisarmBtn.onclick=()=>spiSend('spi.pin2pwn.disarm');
+    if(pin2pwnTermArmBtn)pin2pwnTermArmBtn.onclick=()=>spiSend('spi.pin2pwn.arm');
+    if(pin2pwnTermDisarmBtn)pin2pwnTermDisarmBtn.onclick=()=>spiSend('spi.pin2pwn.disarm');
     spiDetectStartBtn.onclick=()=>spiSend('spi.detect.start');
     spiDetectStopBtn.onclick=()=>{spiSend('spi.detect.stop');resetPinUi();};
     spiSniffStartBtn.onclick=()=>{resetSnifferUi();setSnifferLive(true);spiSend('spi.sniffer.start');setTimeout(()=>spiSend('spi.get_config'),120);};
@@ -2733,6 +2819,7 @@
     updateEmmcScanPlan();
     updateEmmcFindPlan();
     resetSnifferUi();
+    renderPin2pwnStatus({state:'disabled',detail:'not enabled'});
     syncBaudPresetFromValue();
     updateReadRanges();
     updateSpiDumpFileMeta();
