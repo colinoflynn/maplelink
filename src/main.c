@@ -54,6 +54,7 @@ try changing the first byte of tud_network_mac_address[] below from 0x02 to 0x00
 #include "lwip/init.h"
 #include "lwip/timeouts.h"
 #include "app_transport.h"
+#include "net_config.h"
 #include "serial_app.h"
 #include "web_server.h"
 
@@ -76,19 +77,14 @@ static struct pbuf *received_frame;
 uint8_t tud_network_mac_address[6] = {0x02, 0x02, 0x84, 0x6A, 0x96, 0x00};
 
 /* network parameters of this MCU */
-static const ip4_addr_t ipaddr = INIT_IP4(192, 168, 7, 1);
-static const ip4_addr_t netmask = INIT_IP4(255, 255, 255, 0);
-static const ip4_addr_t gateway = INIT_IP4(0, 0, 0, 0);
+static ip4_addr_t ipaddr = INIT_IP4(192, 168, 7, 1);
+static ip4_addr_t netmask = INIT_IP4(255, 255, 255, 0);
+static ip4_addr_t gateway = INIT_IP4(0, 0, 0, 0);
 
 /* database IP addresses that can be offered to the host; this must be in RAM to store assigned MAC addresses */
-static dhcp_entry_t entries[] = {
-    /* mac ip address               lease time */
-    {{0}, INIT_IP4(192, 168, 7, 2), 24 * 60 * 60},
-    {{0}, INIT_IP4(192, 168, 7, 3), 24 * 60 * 60},
-    {{0}, INIT_IP4(192, 168, 7, 4), 24 * 60 * 60},
-};
+static dhcp_entry_t entries[32];
 
-static const dhcp_config_t dhcp_config = {
+static dhcp_config_t dhcp_config = {
     .router = INIT_IP4(0, 0, 0, 0),  /* router address (if any) */
     .port = 67,                      /* listen port */
     .dns = INIT_IP4(192, 168, 7, 1), /* dns server (if any) */
@@ -96,6 +92,43 @@ static const dhcp_config_t dhcp_config = {
     TU_ARRAY_SIZE(entries),          /* num entry */
     entries                          /* entries */
 };
+
+static void load_network_config(void) {
+  net_config_t cfg;
+  uint32_t start, end;
+  size_t count = 0;
+
+  net_config_init();
+  net_config_get(&cfg);
+
+  ipaddr.addr = PP_HTONL(cfg.device_ip);
+  netmask.addr = PP_HTONL(0xFFFFFF00u);
+  gateway.addr = PP_HTONL(0u);
+  dhcp_config.dns = ipaddr;
+  dhcp_config.router = gateway;
+
+  start = cfg.dhcp_start;
+  end = cfg.dhcp_end;
+  if ((start & 0xFFFFFF00u) != (cfg.device_ip & 0xFFFFFF00u) || (end & 0xFFFFFF00u) != (cfg.device_ip & 0xFFFFFF00u) ||
+      end < start) {
+    start = (cfg.device_ip & 0xFFFFFF00u) | 2u;
+    end = (cfg.device_ip & 0xFFFFFF00u) | 32u;
+  }
+
+  for (uint32_t ip = start; ip <= end && count < TU_ARRAY_SIZE(entries); ip++) {
+    entries[count].addr.addr = PP_HTONL(ip);
+    entries[count].lease = 24u * 60u * 60u;
+    memset(entries[count].mac, 0, sizeof(entries[count].mac));
+    count++;
+  }
+  if (count == 0) {
+    entries[0].addr.addr = PP_HTONL((cfg.device_ip & 0xFFFFFF00u) | 2u);
+    entries[0].lease = 24u * 60u * 60u;
+    memset(entries[0].mac, 0, sizeof(entries[0].mac));
+    count = 1;
+  }
+  dhcp_config.num_entry = (uint8_t)count;
+}
 
 static err_t linkoutput_fn(struct netif *netif, struct pbuf *p) {
   (void) netif;
@@ -289,6 +322,7 @@ static void update_status_led(void) {
 int main(void) {
   /* initialize TinyUSB */
   board_init();
+  load_network_config();
 
   // init device stack on configured roothub port
   tusb_rhport_init_t dev_init = {

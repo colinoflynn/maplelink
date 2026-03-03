@@ -49,6 +49,7 @@ target_sources(picowebserverspi PUBLIC
   ${CMAKE_CURRENT_LIST_DIR}/src/web_server.c
   ${CMAKE_CURRENT_LIST_DIR}/src/app_router.c
   ${CMAKE_CURRENT_LIST_DIR}/src/serial_app.c
+  ${CMAKE_CURRENT_LIST_DIR}/src/net_config.c
   ${CMAKE_CURRENT_LIST_DIR}/src/proto_uart.c
   ${CMAKE_CURRENT_LIST_DIR}/src/proto_spi.c
   ${CMAKE_CURRENT_LIST_DIR}/src/proto_i2c.c

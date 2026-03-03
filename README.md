@@ -138,7 +138,7 @@ You may want to use a R-Pi Pico clone with a USB-C port to make this less painfu
    - `Download Text Log` exports terminal text.
    - `Download Raw Binary` exports raw RX bytes.
 
-### SPI Dump
+### SPI FLASH Interface
 
 #### Detecting Conflicting Access
 
@@ -152,6 +152,8 @@ You may want to use a R-Pi Pico clone with a USB-C port to make this less painfu
    - `INTERFERENCE` indicates external activity on the bus.
 
 If it is reading a valid ID and says *CLEAR* between reads, this indicates you might have a good link.
+
+**NOTE**: The frequency display is not accurate as just polls, but gives some idea of if things are busier or less busy, so have left the numeric display in.
 
 #### Basic Dumping
 
@@ -263,6 +265,9 @@ implements some searching modes to try and find more interesting (non-empty) are
 4. `Clear Debug Log` clears UI debug output.
 5. `Enter BOOTSEL` reboots Pico into USB bootloader mode.
 6. About panel includes firmware/build timestamp and project links.
+7. In `Network`, you can set `Device IP` and DHCP range (`DHCP Start`/`DHCP End`).
+8. Applying network config saves settings in flash and reboots device.
+9. Stored network config is invalidated automatically when firmware build changes.
 
 ## Developer Notes
 
@@ -310,4 +315,3 @@ Use the CMake cache option:
 
 - `BROWSERIO_XTERM_SOURCE=CDN` (default): loads xterm from CDN URLs.
 - `BROWSERIO_XTERM_SOURCE=LOCAL`: expects local `/xterm.js` and `/xterm.css` assets via `xterm_asset_get`.
-

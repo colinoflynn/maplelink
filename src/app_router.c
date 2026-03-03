@@ -7,6 +7,8 @@
 
 #include "app_transport.h"
 #include "build_info.h"
+#include "hardware/watchdog.h"
+#include "net_config.h"
 #include "pico/bootrom.h"
 #include "pico/stdlib.h"
 #include "proto_i2c.h"
@@ -16,6 +18,7 @@
 
 static ws_conn_t *g_client;
 static bool g_bootsel_pending;
+static bool g_reboot_pending;
 static uint8_t g_debug_level = 1;
 
 bool app_send_text(const char *text) {
@@ -60,9 +63,45 @@ static bool extract_u32_key(const char *json, const char *key, uint32_t *out) {
   return true;
 }
 
+static bool extract_str_key(const char *json, const char *key, char *out, size_t out_sz) {
+  char pattern[40];
+  const char *p;
+  const char *e;
+  size_t n;
+  if (!json || !key || !out || out_sz < 2) return false;
+  snprintf(pattern, sizeof(pattern), "\"%s\":", key);
+  p = strstr(json, pattern);
+  if (!p) return false;
+  p += strlen(pattern);
+  while (*p == ' ' || *p == '\t') p++;
+  if (*p != '"') return false;
+  p++;
+  e = strchr(p, '"');
+  if (!e) return false;
+  n = (size_t)(e - p);
+  if (n == 0 || n >= out_sz) return false;
+  memcpy(out, p, n);
+  out[n] = 0;
+  return true;
+}
+
 static bool send_debug_config(void) {
   char out[96];
   snprintf(out, sizeof(out), "{\"type\":\"system.debug\",\"level\":%u}", (unsigned)g_debug_level);
+  return app_send_text(out);
+}
+
+static bool send_net_config(bool ok, const char *msg) {
+  char ip[20], start[20], end[20], out[256];
+  net_config_t cfg;
+  net_config_get(&cfg);
+  net_format_ipv4(cfg.device_ip, ip, sizeof(ip));
+  net_format_ipv4(cfg.dhcp_start, start, sizeof(start));
+  net_format_ipv4(cfg.dhcp_end, end, sizeof(end));
+  snprintf(out, sizeof(out),
+           "{\"type\":\"system.net\",\"ok\":%s,\"device_ip\":\"%s\",\"dhcp_start\":\"%s\",\"dhcp_end\":\"%s\","
+           "\"msg\":\"%s\",\"reboot_required\":true}",
+           ok ? "true" : "false", ip, start, end, msg ? msg : "");
   return app_send_text(out);
 }
 
@@ -101,6 +140,34 @@ static bool dispatch_text(const char *type, const char *json) {
   }
   if (strcmp(type, "system.get_debug") == 0) {
     return send_debug_config();
+  }
+  if (strcmp(type, "system.net.get") == 0) {
+    return send_net_config(true, "ok");
+  }
+  if (strcmp(type, "system.net.set") == 0) {
+    char ip[32], start[32], end[32], err[96];
+    net_config_t cfg;
+    uint32_t tmp;
+
+    net_config_get(&cfg);
+    if (extract_str_key(json, "device_ip", ip, sizeof(ip))) {
+      if (!net_parse_ipv4(ip, &tmp)) return send_net_config(false, "invalid device_ip");
+      cfg.device_ip = tmp;
+    }
+    if (extract_str_key(json, "dhcp_start", start, sizeof(start))) {
+      if (!net_parse_ipv4(start, &tmp)) return send_net_config(false, "invalid dhcp_start");
+      cfg.dhcp_start = tmp;
+    }
+    if (extract_str_key(json, "dhcp_end", end, sizeof(end))) {
+      if (!net_parse_ipv4(end, &tmp)) return send_net_config(false, "invalid dhcp_end");
+      cfg.dhcp_end = tmp;
+    }
+
+    if (!net_config_set_and_save(&cfg, err, sizeof(err))) {
+      return send_net_config(false, err);
+    }
+    g_reboot_pending = true;
+    return send_net_config(true, "saved, rebooting");
   }
   if (strcmp(type, "system.set_debug") == 0) {
     if (extract_u32_key(json, "level", &v)) {
@@ -207,6 +274,11 @@ void app_router_poll(void) {
     // Small delay gives websocket ACK a chance to flush before rebooting.
     sleep_ms(40);
     reset_usb_boot(0, 0);
+    return;
+  }
+  if (g_reboot_pending) {
+    sleep_ms(80);
+    watchdog_reboot(0, 0, 0);
     return;
   }
   proto_uart_poll();
