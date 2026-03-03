@@ -100,11 +100,11 @@ will trigger the fast blinking mode.
 
 So far tested on Pixel 8A running Android 16:
 
-* Used NCM firmware
-* Plugged into a basic USC-C hub (just 4x USB-A ports) to go USB-C --> USB-A --> Micro-USB A
-* I had to **TURN OFF* both Wi-Fi & Mobile Internet for it to use the USB-Ethernet connection
+* Used NCM firmware.
+* Plugged into a basic USC-C hub (just 4x USB-A ports) to go USB-C --> USB-A --> Micro-USB A.
+* I had to *TURN OFF* both Wi-Fi & Mobile Internet for it to use the USB-Ethernet connection. Try at least turning off Wi-Fi. Airplane mode alone didn't work either.
 
-Search "USB Ethernet Adapter" for your specific phone model.
+Search "USB Ethernet Adapter" for your specific phone model for any device-specific information. It seemed people reported varying degrees of success with needing to turn off other data (wifi etc).
 
 According to [https://www.macrumors.com/2023/09/22/iphone-15-usb-c-to-ethernet/](macrumors.com) iPhone 15 and later support USB Ethernet adapters.
 
