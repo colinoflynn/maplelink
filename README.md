@@ -1,11 +1,11 @@
 # MapleLink: USB Serial + SPI & slow eMMC Dumper with a (Offline) Web Interface
 
 Do you want to do some basic hardware hacking, but don't want to deal with installing tools? This project makes it (somewhat) easy to get into hardware
-hacking, requiring only a R-Pi Pico and some wires (and probably logic clips).
+hacking, requiring only a R-Pi Pico and some wires (and probably logic clips). You can even use your phone instead of a computer! Perfect for hardware hacking on the go.
 
 ## Detailed Features
 
-* Webpage served over USB is the UI, nothing to install on host computers if USB-Ethernet support available (works in Win 11, Linux, Mac probably)
+* Webpage served over USB is the UI, nothing to install on host computers if USB-Ethernet support available (works in Win 11, Linux, Mac probably, Android)
 * UART terminal features:
   * ASCII, hex mode, and terminal (vt100) support.
   * Can tx hex blocks or specific text blocks.
@@ -81,6 +81,31 @@ The current firmware is hard-coded to serve a webpage on [http://192.168.7.1](ht
 * Check you got an IP assigned from this interface
 
 Local settings like VPN enforcing tunneling may prevent access to the network.
+
+### LED Troubleshooting
+
+The LED on the R-Pi Pico has 3 states:
+
+* Fast blinking (3-5 blinks per second) = power but no USB action yet
+* Fast blinking but in blink / blink / off / off pattern = enumeration failed
+* Slow blinking (1-2 blinks per second) = enumeration successful, no webpage connection
+* Solid = webpage connection
+
+You should get slow blinking until you access the website.
+
+### Phone Usage
+
+So far tested on Pixel 8A running Android 16:
+
+* Used NCM firmware
+* Plugged into a basic USC-C hub (just 4x USB-A ports) to go USB-C --> USB-A --> Micro-USB A
+* I had to **TURN OFF* both Wi-Fi & Mobile Internet for it to use the USB-Ethernet connection
+
+Search "USB Ethernet Adapter" for your specific phone model.
+
+According to [https://www.macrumors.com/2023/09/22/iphone-15-usb-c-to-ethernet/](macrumors.com) iPhone 15 and later support USB Ethernet adapters.
+
+You may want to use a R-Pi Pico clone with a USB-C port to make this less painful physically (or get a forbidden USB-C to Micro-USB cable).
 
 ### Terminal Usage
 
