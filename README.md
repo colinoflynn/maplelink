@@ -175,7 +175,7 @@ If it is reading a valid ID and says *CLEAR* between reads, this indicates you m
 
 1. In SPI tab, use `Read SFDP` to parse density/address mode/read command hints.
 2. Use `Read Status Register` to read/decode SR1/SR2/SR3 and common protection bits.
-3. `Start Sniffer` captures SPI transactions (best effort; may not keep up with long high-speed streams).
+3. `Start Sniffer` captures SPI transactions - this samples both MOSI & MISO, so it uses PIO instead of the SPI hardware blocks. This is not a well tested area, it won't keep up with long data stretches and is likely to miss data.
 
 ### SPI Raw Packet Mode
 
@@ -315,3 +315,4 @@ Use the CMake cache option:
 
 - `BROWSERIO_XTERM_SOURCE=CDN` (default): loads xterm from CDN URLs.
 - `BROWSERIO_XTERM_SOURCE=LOCAL`: expects local `/xterm.js` and `/xterm.css` assets via `xterm_asset_get`.
+
