@@ -58,6 +58,8 @@ Some test on my computer for SPI:
 
 ## Usage Directions
 
+### Setup
+
 USB Ethernet is a beautiful idea with an unfortunute history of quasi-standards and different implementations (I even wrote such firmware [a long time ago](https://github.com/contiki-os/contiki/blob/master/cpu/avr/dev/usb/rndis/rndis.c) so I have the scars). Luckily this  better nowadays, but there are still TWO different imeplementations you can try:
 
 * `maplelink-X.X-ncm.uf2`
@@ -70,6 +72,15 @@ The `rndis-ecm` tries two other standards: RNDIS is a Microsoft 'standard' (but 
 Drag & drop the `.uf2` file onto a R-Pi pico in bootloader mode.
 
 I didn't need a driver for `ncm` in Windows 11, but I can provide signed drivers if required, open an issue if this is the problem.
+
+### Web
+
+The current firmware is hard-coded to serve a webpage on [http://192.168.7.1](http://192.168.7.1). Your computer should get an IP automatically (`192.168.7.2`). If you can't access the webpage, check in order:
+
+* Check you have a new network interface - it might get a weird name, on Windows it shows up under "Network Interface"
+* Check you got an IP assigned from this interface
+
+Local settings like VPN enforcing tunneling may prevent access to the network.
 
 ### Terminal Usage
 

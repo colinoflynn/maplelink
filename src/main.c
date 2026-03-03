@@ -53,6 +53,7 @@ try changing the first byte of tud_network_mac_address[] below from 0x02 to 0x00
 #include "lwip/ethip6.h"
 #include "lwip/init.h"
 #include "lwip/timeouts.h"
+#include "app_transport.h"
 #include "serial_app.h"
 #include "web_server.h"
 
@@ -225,6 +226,66 @@ void tud_network_init_cb(void) {
   }
 }
 
+typedef enum {
+  LED_ST_BOOT_NO_ENUM = 0,
+  LED_ST_ENUM_ERROR = 1,
+  LED_ST_ENUM_OK_NO_CLIENT = 2,
+  LED_ST_CONNECTED = 3,
+} led_state_t;
+
+static void update_status_led(void) {
+  static uint32_t last_toggle_ms;
+  static bool fast_blink_on;
+  const uint32_t now = board_millis();
+  led_state_t st;
+  bool led_on = false;
+
+  // 1) Powered but no USB enumeration started.
+  // 2) USB activity started but not configured (patterned quick blink).
+  // 3/5) Configured but no active websocket client yet/anymore.
+  // 4) Active websocket client connected.
+  if (!tud_connected()) {
+    st = LED_ST_BOOT_NO_ENUM;
+  } else if (!tud_mounted()) {
+    st = LED_ST_ENUM_ERROR;
+  } else if (app_current_client() == NULL) {
+    st = LED_ST_ENUM_OK_NO_CLIENT;
+  } else {
+    st = LED_ST_CONNECTED;
+  }
+
+  switch (st) {
+    case LED_ST_BOOT_NO_ENUM:
+      // Fast blink.
+      if ((uint32_t)(now - last_toggle_ms) >= 120u) {
+        last_toggle_ms = now;
+        fast_blink_on = !fast_blink_on;
+      }
+      led_on = fast_blink_on;
+      break;
+
+    case LED_ST_ENUM_ERROR: {
+      // Pattern: 2 quick blinks then long pause.
+      const uint32_t t = now % 1200u;
+      led_on = ((t < 90u) || (t >= 210u && t < 300u));
+      break;
+    }
+
+    case LED_ST_ENUM_OK_NO_CLIENT:
+      // Slow blink while waiting for client.
+      led_on = ((now / 700u) & 1u) != 0u;
+      break;
+
+    case LED_ST_CONNECTED:
+    default:
+      // Solid on when connected.
+      led_on = true;
+      break;
+  }
+
+  board_led_write(led_on);
+}
+
 int main(void) {
   /* initialize TinyUSB */
   board_init();
@@ -257,6 +318,7 @@ int main(void) {
     tud_task();
     service_traffic();
     serial_app_poll();
+    update_status_led();
   }
 
   return 0;
