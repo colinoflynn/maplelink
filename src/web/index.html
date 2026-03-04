@@ -132,6 +132,8 @@
     .rawrow input[type="text"] { width:100%; }
     .rawrow label { white-space:nowrap; }
     #rawout { height:calc(100vh - 280px); overflow:auto; padding:10px; white-space:pre-wrap; border-top:1px solid #1f2937; color:#cbd5e1; background:#0a1222; }
+    .vsep { display:inline-block; width:1px; height:20px; background:#334155; margin:0 6px; opacity:.95; }
+    .termgrp { display:flex; gap:8px; align-items:center; flex-wrap:nowrap; white-space:nowrap; }
     #debugPanel a {
       color:#67e8f9;
       text-decoration:underline;
@@ -252,26 +254,30 @@
     <span id="st">connecting...</span>
   </div>
   <div class="bar">
-    <label>Enter <select id="enter"><option value="none">none</option><option value="cr">\r</option><option value="lf">\n</option><option value="crlf" selected>\r\n</option></select></label>
-    <label>Send <select id="sendmode"><option value="type">as you type</option><option value="line">on Enter only</option></select></label>
-    <label><input id="localecho" type="checkbox">local echo</label>
-  </div>
-  <div class="bar">
-    <label>Decode <select id="decode"><option value="plain">plain</option><option value="ansi">ansi colors</option><option value="vt100">vt100 (xterm.js)</option></select></label>
-    <label>Terminal Theme <select id="termtheme">
-      <option value="default" selected>default</option>
-      <option value="matrix">matrix</option>
-      <option value="canada">canada</option>
-      <option value="coolranch">cool ranch</option>
-      <option value="rainbow">rainbow</option>
-      <option value="pink">pink</option>
-      <option value="hotpink">hot pink</option>
-    </select></label>
-  </div>
-  <div class="bar">
-    <label><input id="hexview" type="checkbox">hex view</label>
-    <label>Hex cols <input id="hexcols" type="number" value="16" min="4" max="64" step="1"></label>
-    <label>Hex gap ms <input id="hexgap" type="number" value="100" min="10" max="2000" step="10"></label>
+    <div class="termgrp">
+      <label>Enter <select id="enter"><option value="none">none</option><option value="cr">\r</option><option value="lf">\n</option><option value="crlf" selected>\r\n</option></select></label>
+      <label>Send <select id="sendmode"><option value="type">as you type</option><option value="line">on Enter only</option></select></label>
+      <label><input id="localecho" type="checkbox">local echo</label>
+    </div>
+    <span class="vsep" aria-hidden="true"></span>
+    <div class="termgrp">
+      <label>Decode <select id="decode"><option value="plain">plain</option><option value="ansi">ansi colors</option><option value="vt100">vt100 (xterm.js)</option></select></label>
+      <label>Terminal Theme <select id="termtheme">
+        <option value="default" selected>default</option>
+        <option value="matrix">matrix</option>
+        <option value="canada">canada</option>
+        <option value="coolranch">cool ranch</option>
+        <option value="rainbow">rainbow</option>
+        <option value="pink">pink</option>
+        <option value="hotpink">hot pink</option>
+      </select></label>
+    </div>
+    <span class="vsep" aria-hidden="true"></span>
+    <div class="termgrp">
+      <label><input id="hexview" type="checkbox">hex view</label>
+      <label>Hex cols <input id="hexcols" type="number" value="16" min="4" max="64" step="1"></label>
+      <label>Hex gap ms <input id="hexgap" type="number" value="100" min="10" max="2000" step="10"></label>
+    </div>
   </div>
   <div class="bar">
     <span id="uartpins" class="dim">UART0 pins: TX=GPIO0, RX=GPIO1</span>
@@ -501,6 +507,7 @@
         <progress id="spidumpprogress" class="prog" value="0" max="100"></progress>
         <div id="spilasthex">last dump bytes will appear here</div>
       </div>
+      <div class="bar" id="spidump">dump: idle</div>
     </div>
     <div class="group">
       <div class="gtitle">PIN2PWN</div>
@@ -525,7 +532,6 @@
         <span id="pin2pwndetail" class="dim">not enabled</span>
       </div>
     </div>
-    <div class="bar" id="spidump">dump: idle</div>
     <div id="spiout"></div>
   </div>
 

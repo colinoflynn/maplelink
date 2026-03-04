@@ -1511,6 +1511,16 @@ void proto_spi_poll(void) {
   uint32_t now = now_ms();
   uint64_t now_us = time_us_64();
 
+  // Hard safety interlock: if any SPI activity mode is running, PIN2PWN must
+  // be fully disabled so it can never pull lines during transactions.
+  if ((g_spi.dump_enabled || g_spi.idpoll_enabled || g_spi.detect_enabled || g_spi.sniffer_enabled) &&
+      (g_spi.pin2pwn_enabled || g_spi.pin2pwn_armed || g_spi.pin2pwn_triggered ||
+       g_spi.pin2pwn_phase != SPI_PIN2PWN_PHASE_IDLE)) {
+    spi_pin2pwn_disable("disabled by active spi mode");
+    spi_pin2pwn_send_status();
+    send_spi_state();
+  }
+
   if (g_spi.pin2pwn_enabled && g_spi.pin2pwn_phase == SPI_PIN2PWN_PHASE_WAIT &&
       !g_spi.pin2pwn_wait_reported) {
     spi_pin2pwn_set_detail("trigger detected: waiting");

@@ -7,6 +7,7 @@
 
 #include "app_transport.h"
 #include "build_info.h"
+#include "fw_version.h"
 #include "hardware/watchdog.h"
 #include "net_config.h"
 #include "pico/bootrom.h"
@@ -190,7 +191,7 @@ static bool dispatch_text(const char *type, const char *json) {
 static void send_hello(void) {
   char out[224];
   snprintf(out, sizeof(out),
-           "{\"type\":\"hello\",\"fw\":\"0.2.0\",\"build_date\":\"%s\",\"build_time\":\"%s\","
+           "{\"type\":\"hello\",\"fw\":\"" MAPLELINK_FW_VERSION "\",\"build_date\":\"%s\",\"build_time\":\"%s\","
            "\"caps\":[\"uart0\",\"spi0\",\"i2c0\",\"emmc0\",\"bootsel\",\"debug\"]}",
            BROWSERIO_BUILD_DATE, BROWSERIO_BUILD_TIME);
   (void)app_send_text(out);
