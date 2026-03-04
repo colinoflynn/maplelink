@@ -3,7 +3,7 @@
 Do you want to do some basic hardware hacking, but don't want to deal with installing tools? This project makes it (somewhat) easy to get into hardware
 hacking, requiring only a R-Pi Pico and some wires (and probably logic clips). You can even use your phone instead of a computer! Perfect for hardware hacking on the go.
 
-YT Link:
+This was a copy (warning: all your base soundtrack) of a BSky video - will upload a better tutorial video when I get some more time:
 [![A short overview video](https://img.youtube.com/vi/X_hDz2z1tG4/0.jpg)](https://www.youtube.com/watch?v=X_hDz2z1tG4)
 
 ## Detailed Features
