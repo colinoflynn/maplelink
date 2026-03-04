@@ -3,6 +3,8 @@
 Do you want to do some basic hardware hacking, but don't want to deal with installing tools? This project makes it (somewhat) easy to get into hardware
 hacking, requiring only a R-Pi Pico and some wires (and probably logic clips). You can even use your phone instead of a computer! Perfect for hardware hacking on the go.
 
+<iframe width="560" height="315" src="https://www.youtube.com/embed/X_hDz2z1tG4?si=Ri8yjGPpnp6kV3aA" title="YouTube video player" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" referrerpolicy="strict-origin-when-cross-origin" allowfullscreen></iframe>
+
 ## Detailed Features
 
 * Webpage served over USB is the UI, nothing to install on host computers if USB-Ethernet support available (works in Win 11, Linux, Mac probably, Android)
