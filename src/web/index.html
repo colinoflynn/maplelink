@@ -300,6 +300,13 @@
     <label>Backlog KB <input id="retainkb" type="number" value="256" min="32" max="2048" step="32"></label>
     <label><input id="scrolllock" type="checkbox">Disable Autoscroll</label>
     <button id="clear">Clear Terminal Output</button>
+    <span class="vsep" aria-hidden="true"></span>
+    <span class="dim">Terminal Height:</span>
+    <button id="termhauto">Auto</button>
+    <button id="termhdec">-</button>
+    <button id="termhinc">+</button>
+    <button id="termhmax">Max</button>
+    <span id="termhstat" class="dim">auto</span>
     <span class="dim">Tip: click terminal pane to type</span>
   </div>
   <div class="bar">
@@ -1019,6 +1026,11 @@
     const histHex=document.getElementById('histhex');
     const dlText=document.getElementById('dltext');
     const dlRaw=document.getElementById('dlraw');
+    const termHAutoBtn=document.getElementById('termhauto');
+    const termHDecBtn=document.getElementById('termhdec');
+    const termHIncBtn=document.getElementById('termhinc');
+    const termHMaxBtn=document.getElementById('termhmax');
+    const termHStat=document.getElementById('termhstat');
     const cursor=document.createElement('span');cursor.className='cursor';
     let ws=null;
     let wsReconnectTimer=null;
@@ -1027,6 +1039,7 @@
     const enc=new TextEncoder();
     const dec=new TextDecoder('utf-8',{fatal:false});
     let lineBuf='';
+    let termHeightOverride=0;
     let hexOffset=0;
     let pendingHexChunks=[];
     let pendingHexBytes=0;
@@ -1189,7 +1202,14 @@
       if(!shell||terminalPanel.classList.contains('hidden'))return;
       const rect=shell.getBoundingClientRect();
       const avail=window.innerHeight-rect.top-8;
-      shell.style.height=Math.max(220,avail)+'px';
+      let h=Math.max(220,avail);
+      if(termHeightOverride>0){
+        h=Math.max(220,Math.min(2000,termHeightOverride));
+      }
+      shell.style.height=h+'px';
+      if(termHStat){
+        termHStat.textContent=(termHeightOverride>0)?(h+' px'):'auto';
+      }
       if(xterm&&decodeMode.value==='vt100'&&typeof xterm.refresh==='function')xterm.refresh(0,xterm.rows-1);
     }
     function layoutSpiLog(){
@@ -2524,6 +2544,23 @@
     dlText.onclick=()=>{saveBlob('pico_log_'+stamp()+'.txt','text/plain;charset=utf-8',[textLog]);};
     dlRaw.onclick=()=>{if(!rawLogChunks.length){appendTerm('\n[info raw log is empty]\n','dim');return;}saveBlob('pico_raw_'+stamp()+'.bin','application/octet-stream',rawLogChunks);};
     document.getElementById('clear').onclick=()=>{term.textContent='';hex.textContent='';hexOffset=0;lineBuf='';termCharCount=0;textLog='';rawLogChunks=[];rawLogBytes=0;pendingHexChunks=[];pendingHexBytes=0;rxChunks=[];if(hexTimer){clearTimeout(hexTimer);hexTimer=null;}if(rxFlushTimer){clearTimeout(rxFlushTimer);rxFlushTimer=null;}if(xterm)xterm.clear();sgr.bold=false;sgr.fg='';sgr.bg='';keepCursor();};
+    if(termHAutoBtn)termHAutoBtn.onclick=()=>{termHeightOverride=0;layoutTerminalShell();};
+    if(termHDecBtn)termHDecBtn.onclick=()=>{
+      const cur=Math.max(220,parseInt(shell.style.height||String(shell.clientHeight||320),10)||320);
+      termHeightOverride=Math.max(220,cur-120);
+      layoutTerminalShell();
+    };
+    if(termHIncBtn)termHIncBtn.onclick=()=>{
+      const cur=Math.max(220,parseInt(shell.style.height||String(shell.clientHeight||320),10)||320);
+      termHeightOverride=Math.min(2000,cur+120);
+      layoutTerminalShell();
+    };
+    if(termHMaxBtn)termHMaxBtn.onclick=()=>{
+      const rect=shell.getBoundingClientRect();
+      const avail=window.innerHeight-rect.top-8;
+      termHeightOverride=Math.max(220,avail+220);
+      layoutTerminalShell();
+    };
     ['data','parity','stop'].forEach(id=>{const el=document.getElementById(id);el.addEventListener('input',()=>markDirty(true));el.addEventListener('change',()=>markDirty(true));});
     document.getElementById('baud').addEventListener('input',()=>{markDirty(true);syncBaudPresetFromValue();});
     document.getElementById('baud').addEventListener('change',()=>{markDirty(true);syncBaudPresetFromValue();});

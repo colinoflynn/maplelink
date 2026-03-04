@@ -17,6 +17,13 @@
 #define SPI_PORT_NAME "spi0"
 
 // UART0 uses GPIO0/1 in proto_uart.c. Keep SPI away from those.
+/*
+#define SPI_MISO_PIN 16
+#define SPI_CS_PIN 17
+#define SPI_SCK_PIN 18
+#define SPI_MOSI_PIN 19
+*/
+
 #define SPI_MISO_PIN 4
 #define SPI_CS_PIN 5
 #define SPI_SCK_PIN 6

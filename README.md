@@ -177,6 +177,25 @@ If it is reading a valid ID and says *CLEAR* between reads, this indicates you m
 2. Use `Read Status Register` to read/decode SR1/SR2/SR3 and common protection bits.
 3. `Start Sniffer` captures SPI transactions - this samples both MOSI & MISO, so it uses PIO instead of the SPI hardware blocks. This is not a well tested area, it won't keep up with long data stretches and is likely to miss data.
 
+#### ⚠ PIN2PWN Mode ⚠
+
+⚠ ⚠ WARNING: HIGH RISK OF PERMANENT AND NON-OBVIOUS PIN DAMAGE TO PICO ⚠ ⚠
+
+PIN2PWN mode will look for a trigger of activity on the SPI lines, then drive them high from the R-Pi Pico. You select one line to serve as the trigger, which can see a specific number of transitions.
+
+If you blow up your pins, you can change them in [src/proto_spi.c](src/proto_spi.c). For example here are some other good pins:
+
+```
+#define SPI_MISO_PIN 16
+#define SPI_CS_PIN 17
+#define SPI_SCK_PIN 18
+#define SPI_MOSI_PIN 19
+```
+
+I found that some devices would quickly cause the R-Pico pins to be damaged from conflicting. This manifested as unreliable SPI communication after trying PIN2PWN, so it's not obvious but results in frustrating work later.
+
+More ideally you would drive the SPI line with a transistor connected instead - this would result in pulling the pin *down*, but that will still 100% work.
+
 ### SPI Raw Packet Mode
 
 1. Open **SPI RAW** tab.
