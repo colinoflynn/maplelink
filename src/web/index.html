@@ -510,7 +510,7 @@
       <div class="bar" id="spidump">dump: idle</div>
     </div>
     <div class="group">
-      <div class="gtitle">PIN2PWN</div>
+      <div class="gtitle">PIN2PWN &#x26A0; WARNING: RISK OF PERMANENT PIN DAMAGE &#x26A0;</div>
       <div class="grow">
         <label><input id="pin2pwnenable" type="checkbox">Enable</label>
         <label>Trigger pin <select id="pin2pwnpin">
@@ -521,7 +521,7 @@
         </select></label>
         <label>Min transitions <input id="pin2pwnedges" type="number" min="1" max="100000" step="1" value="2"></label>
         <label>Wait ms <input id="pin2pwnwait" type="number" min="0" max="5000" step="1" value="0"></label>
-        <label>Drive low ms <input id="pin2pwndrive" type="number" min="10" max="10000" step="10" value="1000"></label>
+        <label>Drive high ms <input id="pin2pwndrive" type="number" min="10" max="10000" step="10" value="1000"></label>
       </div>
       <div class="grow">
         <button id="pin2pwnapply">Apply PIN2PWN Config</button>

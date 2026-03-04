@@ -17,10 +17,10 @@
 #define SPI_PORT_NAME "spi0"
 
 // UART0 uses GPIO0/1 in proto_uart.c. Keep SPI away from those.
-#define SPI_MISO_PIN 16
-#define SPI_CS_PIN 17
-#define SPI_SCK_PIN 18
-#define SPI_MOSI_PIN 19
+#define SPI_MISO_PIN 4
+#define SPI_CS_PIN 5
+#define SPI_SCK_PIN 6
+#define SPI_MOSI_PIN 7
 
 #define SPI_MIN_SPEED_HZ 10000u
 #define SPI_MAX_SPEED_HZ 16000000u
@@ -278,10 +278,10 @@ static void spi_pin2pwn_apply_drive_low(void) {
   gpio_set_dir(SPI_MISO_PIN, GPIO_OUT);
   gpio_set_dir(SPI_CS_PIN, GPIO_OUT);
   gpio_set_dir(SPI_SCK_PIN, GPIO_OUT);
-  gpio_put(SPI_MOSI_PIN, 0u);
-  gpio_put(SPI_MISO_PIN, 0u);
-  gpio_put(SPI_CS_PIN, 0u);
-  gpio_put(SPI_SCK_PIN, 0u);
+  gpio_put(SPI_MOSI_PIN, 1u);
+  gpio_put(SPI_MISO_PIN, 1u);
+  gpio_put(SPI_CS_PIN, 1u);
+  gpio_put(SPI_SCK_PIN, 1u);
 }
 
 static void spi_pin2pwn_disarm(const char *detail) {
@@ -1531,7 +1531,7 @@ void proto_spi_poll(void) {
 
   if (g_spi.pin2pwn_enabled && g_spi.pin2pwn_phase == SPI_PIN2PWN_PHASE_WAIT &&
       now_us >= g_spi.pin2pwn_wait_deadline_us) {
-    spi_pin2pwn_set_detail("triggered: driving low");
+    spi_pin2pwn_set_detail("triggered: driving high");
     spi_pin2pwn_apply_drive_low();
     g_spi.pin2pwn_phase = SPI_PIN2PWN_PHASE_DRIVE;
     g_spi.pin2pwn_drive_deadline_us = now_us + ((uint64_t)g_spi.pin2pwn_drive_ms * 1000ull);
