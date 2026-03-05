@@ -293,6 +293,7 @@
     <input id="tx" type="text" placeholder="Send byte sequence (e.g. 01 02 ff or 0x41,0x42)">
     <select id="histhex"><option value="">recent hex...</option></select>
     <button id="sendbytes">Send Bytes</button>
+    <label>TX gap ms/char <input id="txgapms" type="number" value="0" min="0" max="1000" step="0.1"></label>
   </div>
   <div class="bar">
     <button id="dltext">Download Text Log</button>
@@ -1021,6 +1022,7 @@
     const retainKb=document.getElementById('retainkb');
     const localEcho=document.getElementById('localecho');
     const txStr=document.getElementById('txstr');
+    const txGapMs=document.getElementById('txgapms');
     const histText=document.getElementById('histtext');
     const tx=document.getElementById('tx');
     const histHex=document.getElementById('histhex');
@@ -1045,9 +1047,15 @@
     let pendingHexBytes=0;
     let hexTimer=null;
     let rxChunks=[];
+    let rxQueuedBytes=0;
+    let rxDroppedBytes=0;
     let rxFlushTimer=null;
     let termCharCount=0;
-    let textLog='';
+    let textLogChunks=[];
+    let textLogChars=0;
+    let lastDecodeModeValue='';
+    let plainRenderLastLen=-1;
+    let plainRenderLastTheme='';
     let rawLogChunks=[];
     let rawLogBytes=0;
     let xterm=null;
@@ -1116,6 +1124,9 @@
     const MAX_SPI_LOG_LINES=300;
     const MAX_DBG_LOG_LINES=600;
     const MAX_SNIFF_LINES=240;
+    const RX_QUEUE_MAX_BYTES=8*1024*1024;
+    const UART_TX_CHUNK_BYTES=256;
+    const UART_TX_YIELD_EVERY_CHUNKS=8;
     const WS_BIN_MAGIC=0xB0;
     const WS_CH_UART=0x01;
     const WS_CH_SPI_DUMP_DATA=0x02;
@@ -2314,7 +2325,42 @@
     function termLimit(){const kb=Math.max(32,Math.min(2048,parseInt(retainKb.value,10)||256));return kb*1024;}
     function hexLimit(){return Math.floor(termLimit()*1.5);}
     function rawLimit(){return Math.max(256*1024,termLimit()*4);}
-    function appendTextLog(s){if(!s)return;textLog+=s;const lim=termLimit();if(textLog.length>lim)textLog=textLog.slice(-lim);}
+    function appendTextLog(s){
+      if(!s)return;
+      const lim=termLimit();
+      textLogChunks.push(s);
+      textLogChars+=s.length;
+      while(textLogChars>lim&&textLogChunks.length){
+        const over=textLogChars-lim;
+        const head=textLogChunks[0]||'';
+        if(head.length<=over){
+          textLogChars-=head.length;
+          textLogChunks.shift();
+        }else{
+          textLogChunks[0]=head.slice(over);
+          textLogChars-=over;
+        }
+      }
+    }
+    function getTextLog(maxChars){
+      const total=textLogChars;
+      const lim=(typeof maxChars==='number'&&maxChars>0)?Math.min(maxChars,total):total;
+      if(lim<=0||!textLogChunks.length)return '';
+      let need=lim;
+      const out=[];
+      for(let i=textLogChunks.length-1;i>=0&&need>0;i--){
+        const seg=textLogChunks[i]||'';
+        if(seg.length<=need){
+          out.push(seg);
+          need-=seg.length;
+        }else{
+          out.push(seg.slice(seg.length-need));
+          need=0;
+        }
+      }
+      out.reverse();
+      return out.join('');
+    }
     function pushRawLog(bytes){if(!bytes||!bytes.length)return;const c=new Uint8Array(bytes.length);c.set(bytes);rawLogChunks.push(c);rawLogBytes+=c.length;const lim=rawLimit();while(rawLogBytes>lim&&rawLogChunks.length){rawLogBytes-=rawLogChunks[0].length;rawLogChunks.shift();}}
     function saveBlob(name,type,parts){const b=new Blob(parts,{type:type});const a=document.createElement('a');a.href=URL.createObjectURL(b);a.download=name;document.body.appendChild(a);a.click();setTimeout(()=>{URL.revokeObjectURL(a.href);a.remove();},0);}
     async function gzipBytesWriteClose(bytes){
@@ -2407,13 +2453,150 @@
     function appendTermStyled(text){const cls=[sgr.bold?'ansi-bold':'',sgr.fg,sgr.bg].filter(Boolean).join(' ');appendTerm(text,cls);}
     function parseSgr(code){if(!code||code==='0'){sgr.bold=false;sgr.fg='';sgr.bg='';return;}code.split(';').forEach(c=>{const n=parseInt(c||'0',10);if(n===0){sgr.bold=false;sgr.fg='';sgr.bg='';}else if(n===1)sgr.bold=true;else if(n===22)sgr.bold=false;else if(n===39)sgr.fg='';else if(n===49)sgr.bg='';else if((n>=30&&n<=37)||(n>=90&&n<=97))sgr.fg='fg'+n;else if((n>=40&&n<=47)||(n>=100&&n<=107))sgr.bg='bg'+n;});}
     function appendAnsi(text){let i=0;while(i<text.length){const esc=text.indexOf('\u001b[',i);if(esc<0){appendTermStyled(text.slice(i));break;}if(esc>i)appendTermStyled(text.slice(i,esc));const m=/^\u001b\[([0-9;]*)m/.exec(text.slice(esc));if(!m){appendTermStyled(text.slice(esc,esc+1));i=esc+1;continue;}parseSgr(m[1]);i=esc+m[0].length;}}
+    function renderPlainFromTextLog(force){
+      const themeNow=terminalThemeName();
+      if(!force&&plainRenderLastLen===textLogChars&&plainRenderLastTheme===themeNow)return;
+      const lim=termLimit();
+      const cap=Math.min(lim,256*1024);
+      const src=getTextLog(cap);
+      const shown=terminalDisplayText(src);
+      term.textContent='';
+      termCharCount=0;
+      if(textLogChars>cap){
+        const note=document.createElement('span');
+        note.className='dim';
+        note.textContent='[plain view truncated to last '+cap+' chars for responsiveness]\n';
+        term.appendChild(note);
+        termCharCount+=note.textContent.length;
+      }
+      if(shown&&shown.length){
+        const span=document.createElement('span');
+        span.textContent=shown;
+        term.appendChild(span);
+        termCharCount+=shown.length;
+      }
+      plainRenderLastLen=textLogChars;
+      plainRenderLastTheme=themeNow;
+      keepCursor();
+      if(!scrollLock.checked)term.scrollTop=term.scrollHeight;
+    }
     function appendHexNow(bytes){if(!hexView.checked)return;const stick=atBottom(hex);let out='';const cols=Math.max(4,Math.min(64,parseInt(hexCols.value,10)||16));for(let i=0;i<bytes.length;i+=cols){const chunk=bytes.slice(i,i+cols);const off=(hexOffset+i).toString(16).padStart(8,'0');const hx=Array.from(chunk,b=>b.toString(16).padStart(2,'0')).join(' ');const asc=Array.from(chunk,b=>(b>=32&&b<=126)?String.fromCharCode(b):'.').join('');out+=off+'  '+hx.padEnd(cols*3-1,' ')+'  '+asc+'\n';}hexOffset+=bytes.length;hex.textContent+=out;if(hex.textContent.length>hexLimit())hex.textContent=hex.textContent.slice(-hexLimit());if(stick&&!scrollLock.checked)hex.scrollTop=hex.scrollHeight;}
     function flushHex(){if(!pendingHexBytes)return;const b=new Uint8Array(pendingHexBytes);let o=0;for(const ch of pendingHexChunks){b.set(ch,o);o+=ch.length;}pendingHexChunks=[];pendingHexBytes=0;appendHexNow(b);}
     function queueHex(bytes){if(!hexView.checked)return;pendingHexChunks.push(bytes);pendingHexBytes+=bytes.length;if(hexTimer)clearTimeout(hexTimer);const gap=Math.max(10,Math.min(2000,parseInt(hexGap.value,10)||100));hexTimer=setTimeout(()=>{hexTimer=null;flushHex();},gap);}
-    function processRxChunks(){if(!rxChunks.length){rxFlushTimer=null;return;}const parts=rxChunks;rxChunks=[];rxFlushTimer=null;let total=0;for(const p of parts)total+=p.length;const b=new Uint8Array(total);let o=0;for(const p of parts){b.set(p,o);o+=p.length;}pushRawLog(b);queueHex(b);const txt=dec.decode(b);if(decodeMode.value==='vt100'&&xterm){if(scrollLock.checked&&xterm.buffer&&xterm.buffer.active){const vp=xterm.buffer.active.viewportY;xterm.write(txt,()=>xterm.scrollToLine(vp));}else{xterm.write(txt);}appendTextLog(txt);}else if(decodeMode.value==='ansi')appendAnsi(txt);else appendTerm(txt);}
-    function queueRx(bytes){rxChunks.push(bytes);if(rxFlushTimer===null)rxFlushTimer=setTimeout(processRxChunks,16);}
+    function renderRxChunk(bytes,mode){
+      pushRawLog(bytes);
+      queueHex(bytes);
+      const txt=dec.decode(bytes);
+      if(mode==='vt100'&&xterm){
+        if(scrollLock.checked&&xterm.buffer&&xterm.buffer.active){
+          const vp=xterm.buffer.active.viewportY;
+          xterm.write(txt,()=>xterm.scrollToLine(vp));
+        }else{
+          xterm.write(txt);
+        }
+        appendTextLog(txt);
+      }else if(mode==='ansi'){
+        appendAnsi(txt);
+      }else{
+        appendTerm(txt);
+      }
+    }
+    function renderRxBatch(parts){
+      if(!parts||!parts.length)return;
+      let mode=parts[0].mode||'plain';
+      let segs=[];
+      let segBytes=0;
+      const flush=()=>{
+        if(!segs.length||segBytes<=0)return;
+        const b=new Uint8Array(segBytes);
+        let o=0;
+        for(const s of segs){b.set(s,o);o+=s.length;}
+        renderRxChunk(b,mode);
+        segs=[];
+        segBytes=0;
+      };
+      for(const p of parts){
+        if(!p||!p.bytes||!p.bytes.length)continue;
+        const pm=p.mode||'plain';
+        if(pm!==mode){
+          flush();
+          mode=pm;
+        }
+        segs.push(p.bytes);
+        segBytes+=p.bytes.length;
+      }
+      flush();
+    }
+    function processRxChunks(){
+      if(!rxChunks.length){rxFlushTimer=null;return;}
+      const parts=rxChunks;rxChunks=[];rxFlushTimer=null;
+      rxQueuedBytes=0;
+      renderRxBatch(parts);
+      if(rxDroppedBytes>0){
+        appendTerm('\n[warn rx backlog overflow: dropped '+rxDroppedBytes+' bytes]\n','err');
+        rxDroppedBytes=0;
+      }
+    }
+    function queueRx(bytes){
+      if(!bytes||!bytes.length)return;
+      const n=bytes.length;
+      if(n>=RX_QUEUE_MAX_BYTES){
+        rxChunks=[];
+        rxQueuedBytes=0;
+        const keep=bytes.slice(n-RX_QUEUE_MAX_BYTES);
+        rxChunks.push({bytes:keep,mode:decodeMode.value});
+        rxQueuedBytes=keep.length;
+        rxDroppedBytes+=n-keep.length;
+      }else{
+        while(rxQueuedBytes+n>RX_QUEUE_MAX_BYTES&&rxChunks.length){
+          const d=rxChunks.shift();
+          if(d&&d.bytes){
+            rxQueuedBytes-=d.bytes.length;
+            if(rxQueuedBytes<0)rxQueuedBytes=0;
+            rxDroppedBytes+=d.bytes.length;
+          }
+        }
+        rxChunks.push({bytes:bytes,mode:decodeMode.value});
+        rxQueuedBytes+=n;
+      }
+      if(rxFlushTimer===null)rxFlushTimer=setTimeout(processRxChunks,16);
+    }
     function enterBytes(){if(enterMode.value==='none')return new Uint8Array([]);if(enterMode.value==='lf')return new Uint8Array([10]);if(enterMode.value==='crlf')return new Uint8Array([13,10]);return new Uint8Array([13]);}
     function sendBinary(arr){if(ws&&ws.readyState===1&&arr&&arr.length>0)ws.send(arr);}
+    function getTxGapMs(){
+      const v=parseFloat((txGapMs&&txGapMs.value)||'0');
+      if(!Number.isFinite(v)||v<0)return 0;
+      return Math.min(1000,v);
+    }
+    async function sendBinaryChunked(arr,chunkBytes,gapMsPerChar){
+      if(!arr||!arr.length)return 0;
+      if(!ws||ws.readyState!==1)return 0;
+      const gap=Math.max(0,Number(gapMsPerChar)||0);
+      if(gap>0){
+        let sentSlow=0;
+        for(let i=0;i<arr.length;i++){
+          if(!ws||ws.readyState!==1)break;
+          sendBinary(arr.slice(i,i+1));
+          sentSlow++;
+          await new Promise(r=>setTimeout(r,gap));
+        }
+        return sentSlow;
+      }
+      const step=Math.max(16,Math.min(1024,parseInt(chunkBytes,10)||UART_TX_CHUNK_BYTES));
+      let sent=0;
+      let chunks=0;
+      for(let off=0;off<arr.length;off+=step){
+        const part=arr.slice(off,off+step);
+        if(!part.length)break;
+        sendBinary(part);
+        sent+=part.length;
+        chunks++;
+        if((chunks%UART_TX_YIELD_EVERY_CHUNKS)===0){
+          await new Promise(r=>setTimeout(r,0));
+        }
+      }
+      return sent;
+    }
     function sendTextLine(str){if(!str)return;sendBinary(enc.encode(str));}
     function parseEscapes(s){
       if(!s||s.indexOf('\\')<0)return s;
@@ -2485,7 +2668,19 @@
       applyUiTheme();
     }
     async function ensureXterm(){if(xterm||xtermLoading||xtermFailed)return;xtermLoading=true;try{loadCss('__XTERM_CSS_URL__');if(!window.Terminal){try{await loadScript('__XTERM_JS_PRIMARY__');}catch(_){await loadScript('__XTERM_JS_FALLBACK__');}}const p=terminalThemePalette(terminalThemeName());xterm=new window.Terminal({cursorBlink:true,convertEol:false,scrollback:xtermScrollback(),theme:p.xterm});xterm.open(termVt);xterm.onData(d=>sendBinary(enc.encode(d)));xterm.write('\r\n[VT100 mode active]\r\n');}catch(_){xtermFailed=true;appendTerm('\n[error failed to load xterm.js, check internet access]\n','err');decodeMode.value='ansi';shell.classList.remove('vt');}finally{xtermLoading=false;}}
-    function syncDecodeMode(){if(decodeMode.value==='vt100'){shell.classList.add('vt');ensureXterm();}else{shell.classList.remove('vt');}layoutTerminalShell();}
+    function syncDecodeMode(){
+      const prevMode=lastDecodeModeValue;
+      const curMode=decodeMode.value;
+      if(decodeMode.value==='vt100'){
+        shell.classList.add('vt');
+        ensureXterm();
+      }else{
+        shell.classList.remove('vt');
+        if(curMode==='plain'&&prevMode!=='plain')renderPlainFromTextLog(true);
+      }
+      lastDecodeModeValue=curMode;
+      layoutTerminalShell();
+    }
 
     function attachWsHandlers(){
       if(!ws)return;
@@ -2536,14 +2731,14 @@
     }
 
     applyBtn.onclick=()=>{send({type:'uart.set_config',port:'uart0',baud:parseInt(document.getElementById('baud').value,10)||115200,data_bits:parseInt(document.getElementById('data').value,10)||8,parity:document.getElementById('parity').value,stop_bits:parseInt(document.getElementById('stop').value,10)||1,flow:'none'});markDirty(false);};
-    document.getElementById('sendbytes').onclick=()=>{try{const src=tx.value;const b=parseByteInput(src);if(!b.length)return;sendBinary(b);addHistory(hexHistory,src);syncHistory(histHex,hexHistory,'recent hex...');}catch(err){appendTerm('\n[error '+err.message+']\n','err');}};
-    document.getElementById('sendtext').onclick=()=>{const src=txStr.value;if(!src)return;const parsed=parseEscapes(src);sendBinary(enc.encode(parsed));addHistory(textHistory,src);syncHistory(histText,textHistory,'recent text...');};
+    document.getElementById('sendbytes').onclick=async ()=>{try{const src=tx.value;const b=parseByteInput(src);if(!b.length)return;const sent=await sendBinaryChunked(b,UART_TX_CHUNK_BYTES,getTxGapMs());if(sent<b.length)appendTerm('\n[warn send bytes interrupted: '+sent+'/'+b.length+' bytes]\n','err');addHistory(hexHistory,src);syncHistory(histHex,hexHistory,'recent hex...');}catch(err){appendTerm('\n[error '+err.message+']\n','err');}};
+    document.getElementById('sendtext').onclick=async ()=>{const src=txStr.value;if(!src)return;const parsed=parseEscapes(src);const b=enc.encode(parsed);const sent=await sendBinaryChunked(b,UART_TX_CHUNK_BYTES,getTxGapMs());if(sent===b.length)appendTerm('\n[info sent text '+sent+' bytes]\n','dim');else appendTerm('\n[warn send text interrupted: '+sent+'/'+b.length+' bytes]\n','err');addHistory(textHistory,src);syncHistory(histText,textHistory,'recent text...');};
     txStr.addEventListener('keydown',(e)=>{if(e.key==='Enter'){e.preventDefault();document.getElementById('sendtext').click();}});
     histText.addEventListener('change',()=>{if(histText.value)txStr.value=histText.value;});
     histHex.addEventListener('change',()=>{if(histHex.value)tx.value=histHex.value;});
-    dlText.onclick=()=>{saveBlob('pico_log_'+stamp()+'.txt','text/plain;charset=utf-8',[textLog]);};
+    dlText.onclick=()=>{saveBlob('pico_log_'+stamp()+'.txt','text/plain;charset=utf-8',[getTextLog()]);};
     dlRaw.onclick=()=>{if(!rawLogChunks.length){appendTerm('\n[info raw log is empty]\n','dim');return;}saveBlob('pico_raw_'+stamp()+'.bin','application/octet-stream',rawLogChunks);};
-    document.getElementById('clear').onclick=()=>{term.textContent='';hex.textContent='';hexOffset=0;lineBuf='';termCharCount=0;textLog='';rawLogChunks=[];rawLogBytes=0;pendingHexChunks=[];pendingHexBytes=0;rxChunks=[];if(hexTimer){clearTimeout(hexTimer);hexTimer=null;}if(rxFlushTimer){clearTimeout(rxFlushTimer);rxFlushTimer=null;}if(xterm)xterm.clear();sgr.bold=false;sgr.fg='';sgr.bg='';keepCursor();};
+    document.getElementById('clear').onclick=()=>{term.textContent='';hex.textContent='';hexOffset=0;lineBuf='';termCharCount=0;textLogChunks=[];textLogChars=0;plainRenderLastLen=-1;plainRenderLastTheme='';rawLogChunks=[];rawLogBytes=0;pendingHexChunks=[];pendingHexBytes=0;rxChunks=[];rxQueuedBytes=0;rxDroppedBytes=0;if(hexTimer){clearTimeout(hexTimer);hexTimer=null;}if(rxFlushTimer){clearTimeout(rxFlushTimer);rxFlushTimer=null;}if(xterm)xterm.clear();sgr.bold=false;sgr.fg='';sgr.bg='';keepCursor();};
     if(termHAutoBtn)termHAutoBtn.onclick=()=>{termHeightOverride=0;layoutTerminalShell();};
     if(termHDecBtn)termHDecBtn.onclick=()=>{
       const cur=Math.max(220,parseInt(shell.style.height||String(shell.clientHeight||320),10)||320);
