@@ -1,4 +1,6 @@
 # MapleLink: USB Serial + SPI & slow eMMC Dumper with a (Offline) Web Interface
+[![CI Build](https://github.com/colinoflynn/maplelink/actions/workflows/build-uf2.yml/badge.svg)](https://github.com/colinoflynn/maplelink/actions/workflows/build-uf2.yml)
+[![Nightly Downloads](https://img.shields.io/github/downloads/colinoflynn/maplelink/nightly/total?label=nightly%20downloads)](https://github.com/colinoflynn/maplelink/releases/tag/nightly)
 
 Do you want to do some basic hardware hacking, but don't want to deal with installing tools? This project makes it (somewhat) easy to get into hardware
 hacking, requiring only a R-Pi Pico and some wires (and probably logic clips). You can even use your phone instead of a computer! Perfect for hardware hacking on the go.
@@ -73,6 +75,12 @@ USB Ethernet is a beautiful idea with an unfortunute history of quasi-standards 
 Try the `ncm` one first - this is a more recent USB ethernet standard.
 
 The `rndis-ecm` tries two other standards: RNDIS is a Microsoft 'standard' (but some other devices work with it?), and ECM is an older standard. I may need to release a third version without RNDIS for certain things, but will wait to see if that is needed.
+
+Nightly builds are published with stable links:
+
+* [Nightly NCM UF2](https://github.com/colinoflynn/maplelink/releases/download/nightly/maplelink-ncm.uf2)
+* [Nightly ECM/RNDIS UF2](https://github.com/colinoflynn/maplelink/releases/download/nightly/maplelink-ecm-rndis.uf2)
+* [Nightly release page](https://github.com/colinoflynn/maplelink/releases/tag/nightly)
 
 Drag & drop the `.uf2` file onto a R-Pi pico in bootloader mode.
 

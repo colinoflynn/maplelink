@@ -13,6 +13,8 @@ on:
       - "README.md"
       - "**/*.md"
       - "python/**"
+  schedule:
+    - cron: "25 3 * * *"
   workflow_dispatch:
 
 permissions:
@@ -75,10 +77,57 @@ jobs:
           mkdir -p dist
           cp "build-${{ matrix.variant.suffix }}/picowebserverspi.uf2" \
             "dist/maplelink-${{ steps.meta.outputs.commit_id }}-${{ matrix.variant.suffix }}.uf2"
+          cp "build-${{ matrix.variant.suffix }}/picowebserverspi.uf2" \
+            "dist/maplelink-${{ matrix.variant.suffix }}.uf2"
 
       - name: Upload UF2 artifact
         uses: actions/upload-artifact@v4
         with:
           name: maplelink-${{ matrix.variant.suffix }}-uf2
-          path: dist/maplelink-${{ steps.meta.outputs.commit_id }}-${{ matrix.variant.suffix }}.uf2
+          path: |
+            dist/maplelink-${{ steps.meta.outputs.commit_id }}-${{ matrix.variant.suffix }}.uf2
+            dist/maplelink-${{ matrix.variant.suffix }}.uf2
           if-no-files-found: error
+
+  publish-nightly:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download UF2 artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Build nightly release notes
+        id: notes
+        run: |
+          {
+            echo "body<<EOF"
+            echo "Automated nightly build."
+            echo ""
+            echo "- Commit: \`${GITHUB_SHA}\`"
+            echo "- Run: https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+            echo ""
+            echo "Direct download links:"
+            echo "- https://github.com/${GITHUB_REPOSITORY}/releases/download/nightly/maplelink-ncm.uf2"
+            echo "- https://github.com/${GITHUB_REPOSITORY}/releases/download/nightly/maplelink-ecm-rndis.uf2"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Publish nightly release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: nightly
+          name: Nightly
+          prerelease: true
+          body: ${{ steps.notes.outputs.body }}
+          files: |
+            dist/maplelink-ncm.uf2
+            dist/maplelink-ecm-rndis.uf2
+            dist/maplelink-*-ncm.uf2
+            dist/maplelink-*-ecm-rndis.uf2
+          overwrite_files: true
