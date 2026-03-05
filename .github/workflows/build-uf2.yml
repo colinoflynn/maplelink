@@ -7,10 +7,12 @@ on:
     paths-ignore:
       - "README.md"
       - "**/*.md"
+      - "python/**"
   pull_request:
     paths-ignore:
       - "README.md"
       - "**/*.md"
+      - "python/**"
   workflow_dispatch:
 
 permissions:

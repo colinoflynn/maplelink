@@ -10,6 +10,7 @@ This was a copy (warning: all your base soundtrack) of a BSky video - will uploa
 ## Detailed Features
 
 * Webpage served over USB is the UI, nothing to install on host computers if USB-Ethernet support available (works in Win 11, Linux, Mac probably, Android)
+* Python interface (which requires only network interface), solving most annoying USB-driver problems
 * UART terminal features:
   * ASCII, hex mode, and terminal (vt100) support.
   * Can tx hex blocks or specific text blocks.
@@ -291,6 +292,31 @@ implements some searching modes to try and find more interesting (non-empty) are
 7. In `Network`, you can set `Device IP` and DHCP range (`DHCP Start`/`DHCP End`).
 8. Applying network config saves settings in flash and reboots device.
 9. Stored network config is invalidated automatically when firmware build changes.
+
+### Python Interface
+
+See the `python` folder, but a quick example:
+
+```python
+from maplelink import MapleLinkControlClient, MapleLinkSerial
+
+# 1) Serial (pyserial-style API over MapleLink WebSocket)
+ser = MapleLinkSerial("192.168.7.1", baudrate=115200, timeout=1)
+ser.write(b"help\r\n")
+print(ser.readline())
+ser.close()
+
+# 2/3) SPI + eMMC over MapleLink WebSocket control channel
+with MapleLinkControlClient(host="192.168.7.1") as ml:
+    spi_id = ml.spi.read_id()
+    print("SPI ID:", spi_id)
+
+    spi_dump = ml.spi.dump(start_addr=0, length_bytes=4096)
+    print("SPI dump bytes:", len(spi_dump.data), "state:", spi_dump.state)
+
+```
+
+Provided you have the USB-Eth working, it works well inside of most environments (including working on WSL on Windows for example)
 
 ## Developer Notes
 
